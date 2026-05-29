@@ -4,7 +4,7 @@
 > **GitHub:** https://github.com/zeekcomputer-lang/deep-doc-pipeline (PUBLIC)
 > **로컬:** `~/.openclaw/workspace/projects/deep-doc-pipeline/`
 > **최종 업데이트:** 2026-05-29
-> **상태:** 코드 작성 완료 + Rate Limiter 및 헤더 인증 전환 완료 / 실행 검증 보류 (사용자 환경 예정)
+> **상태:** 코드 작성 완료 + 95KB 컨텍스트 예산 가드 전면 적용 / 실행 검증 보류 (사용자 환경 예정)
 
 ---
 
@@ -44,7 +44,8 @@ projects/deep-doc-pipeline/
 └── src/
     ├── schemas.py         7종 Pydantic (hallucinated_terms 강제 포함)
     ├── state.py           GraphState + 3개 reducer (update_dict, operator.add ×2)
-    ├── llm.py             ★ GPT-OSS 표준 + Rate Limiter + 헤더 인증
+    ├── context_guard.py   ★ 95KB 예산 관리 (측정/분할/교차검증)
+    ├── llm.py             ★ GPT-OSS 표준 + Rate Limiter + 헤더 인증 + 예산 하드리밋
     ├── utils.py           Pure Python (sort/filter/compile/validate/split)
     ├── nodes.py           15개 노드 + 4개 라우터 (polish/fact_checker 청크드+스트리밍)
     └── graph.py           LangGraph 조립 (Send 병렬 2곳)
@@ -156,6 +157,7 @@ load_docs ──fanout──▶ strict_extractor (×N, 병렬 Send)
 - [x] Rate Limiter 도입 (12 RPM / 5 동시, 환경변수 조정 가능)
 - [x] API Key 환경변수 제거 → DEFAULT_HEADERS 헤더 인증 전환
 - [x] 504 타임아웃 대응: structured_call stream 파라미터 + 섹션별 분할 윈문/검수 (LESSONS L-011)
+- [x] 95KB 컨텍스트 예산 하드리밋: context_guard.py + 전 노드 예산 가드 (LESSONS L-012)
 - [x] Pure Python 유틸 (sort/filter/compile/validate)
 - [x] LangGraph 노드 15개 + 라우터 4개
 - [x] 그래프 조립 (Send 병렬 2곳)

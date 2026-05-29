@@ -23,6 +23,10 @@ from typing import Any, Dict, Optional, Type, TypeVar
 from openai import OpenAI
 from pydantic import BaseModel
 
+from .context_guard import (
+    BUDGET_BYTES, measure_messages_bytes, ContextBudgetExceeded,
+)
+
 T = TypeVar("T", bound=BaseModel)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -268,6 +272,7 @@ def structured_call(
       - 파싱/검증 실패 시 직전 응답을 assistant 메시지로 넘겨 "JSON만 다시 출력" 재요청.
       - 모든 API 호출은 _rate_limiter 를 통해 분당/동시 호출 수 제한.
       - stream=True: SSE 스트리밍으로 첫 토큰 즉시 수신 → 게이트웨이 504 타임아웃 방지.
+      - 모든 호출 전 95KB 예산 하드리밋 적용 (retry 누적 시 자동 트리밍).
     """
     model = get_model(role)
     schema = response_model.model_json_schema()
@@ -297,6 +302,27 @@ def structured_call(
 
     for attempt in range(max_retries):
         try:
+            # ── 컨텍스트 예산 하드리밋 ──
+            payload_bytes = measure_messages_bytes(work_messages)
+            if payload_bytes > BUDGET_BYTES:
+                # Retry 누적으로 인한 초과: 가장 오래된 retry 쌍 제거
+                while (
+                    len(work_messages) > 3
+                    and payload_bytes > BUDGET_BYTES
+                ):
+                    # index 2,3 = 가장 오래된 (assistant, user) retry 쌍
+                    if (
+                        len(work_messages) >= 5
+                        and work_messages[2]["role"] == "assistant"
+                    ):
+                        del work_messages[2:4]
+                        payload_bytes = measure_messages_bytes(work_messages)
+                    else:
+                        break
+                if payload_bytes > BUDGET_BYTES:
+                    raise ContextBudgetExceeded(payload_bytes, BUDGET_BYTES)
+                print(f"  [structured_call] retry 컨텍스트 트리밍 후 {payload_bytes/1024:.1f}KB")
+
             with _rate_limiter:
                 if stream:
                     # SSE 스트리밍: 첫 토큰이 도달하면 게이트웨이 read_timeout 리셋

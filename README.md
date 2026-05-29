@@ -85,6 +85,7 @@ vllm serve openai/gpt-oss-20b --port 8000
 |---------|-------|------|
 | `LLM_MAX_RPM` | 12 | 분당 최대 호출 수 (10~15 권장) |
 | `LLM_MAX_CONCURRENT` | 5 | 동시 호출 상한 (스레드 자원 보호) |
+| `LLM_CONTEXT_BUDGET_KB` | 95 | per-call 컨텍스트 예산 (KB) |
 
 슬라이딩 윈도우 방식으로 60초 내 호출 수를 제한하며, Semaphore로 동시 요청 수를 추가 제어합니다.
 한도 도달 시 자동 대기하므로 품질에는 영향 없으며, 처리 시간만 비례 증가합니다.

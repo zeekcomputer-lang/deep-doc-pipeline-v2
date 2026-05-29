@@ -18,6 +18,7 @@
 | L-009 | 커뮤니케이션 | 사용자 단답(“a”, “c”) 뒤에 추가 지시가 붙는 패턴 주의 |
 | L-010 | 호환성 | response_format 의존 제거 → 프롬프트 가드 + extract_json 3단 파서가 GPT-OSS 표준 |
 | L-011 | 아키텍처 | 대용량 LLM 컨텍스트 504: Streaming + Section Chunking 이중 방어 |
+| L-012 | 아키텍처 | 95KB 하드리밋: 측정→분할→병합→교차검증 파이프라인, 손실 최소화 우선순위 4단계 |
 
 ---
 
@@ -242,6 +243,46 @@ gh repo edit zeekcomputer-lang/<repo> --visibility private
 > 단일 페이로드로 전체 문서를 보내는 설계는 프로덕션에서 반드시 터진다.
 
 **적용:** `src/nodes.py` polish_node, final_fact_checker_node / `src/llm.py` stream 파라미터 / `src/utils.py` split_compiled_by_section, split_section_header_body
+
+---
+
+## L-012: 95KB 컨텍스트 하드리밋 — 손실 최소화 설계
+
+**상황:**
+업스트림 게이트웨이/LLM 서버의 요청 본문 크기 제한(95KB). 모든 structured_call의 메시지 페이로드가 이 한도 미만이어야 함.
+200건+ 데이터에서 편중 분포(100건/월) 시 section_writer, fact_checker에서 초과 발생.
+
+**손실 최소화 우선순위 (4단계):**
+1. **포맷 최적화** — 무손실. JSON wrapper/guard 오버헤드 최소화.
+2. **부가 컨텍스트 축소** — retry extras(previous_draft · feedback · hallucinated_tokens) 절단.
+3. **데이터 분할 + 다회차 처리** — 이벤트 배치 분할 → 부분 처리 → LLM 병합. 구조적 손실 최소.
+4. **추출적 압축** — 마지막 수단. 핵심 사실 보존하며 텍스트 압축.
+
+**구현 패턴:**
+
+| 노드 | 버짓 초과 시 전략 | 손실 등급 |
+|------|----------------|----------|
+| strict_extractor | 문서 바이트 절단 + [TRUNCATED] | 4단계 |
+| period_summarizer | 배치 분할 → 서브 요약 → LLM 병합 | 3단계 |
+| theme_analyzer | 오래된 월부터 순차 제거 | 2단계 |
+| draft_planner | 요약 100자 절단 | 2단계 |
+| planner_critique | intent 80자 절단 | 2단계 |
+| **section_writer** | retry trim → 이벤트 배치 → 부분 초안 → LLM 병합 | 3단계 |
+| **fact_checker** | 이벤트 배치 + cross_check_terms() 교차검증 | 3단계 |
+| polish | 문단별 분할 윈문 | 3단계 |
+| final_fact_checker | 섹션 skip / 전체 폴백 | 2단계 |
+
+**팩트체커 교차 검증 패턴 (fact_checker_node):**
+이벤트 배치 분할 시, 배치 A에서 "환각"으로 판정된 토큰이 배치 B에는 존재할 수 있음.
+→ `cross_check_terms()`: 후보 환각 토큰을 전체 이벤트 원본에 Python 문자열 매칭으로 교차 확인.
+어느 배치에도 없는 토큰만 진짜 환각으로 확정. LLM 추가 호출 없이 정확도 보전.
+
+**원칙:**
+> 모든 LLM 호출은 "측정 → 가드 → 분할/압축 → 호출" 파이프라인을 따라야 한다.
+> 단일 페이로드로 예산을 초과하는 설계는 프로덕션에서 반드시 터진다.
+> 손실은 4단계 우선순위를 엄격히 준수하여 최소화하라.
+
+**적용:** `src/context_guard.py` (신규) / `src/llm.py` 예산 하드리밋 / `src/nodes.py` 전 노드 예산 가드
 
 ---
 
