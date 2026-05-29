@@ -96,3 +96,51 @@ def format_events_for_prompt(events: List[Dict]) -> str:
     for ev in events:
         lines.append(f"- [{ev['date']}] 이슈: {ev['issue']} / 조치: {ev['action']}")
     return "\n".join(lines)
+
+
+# ────────────────────────────────────────────────────────────
+# 문서 분할 (504 대응 — 섹션별 윈문/검수용)
+# ────────────────────────────────────────────────────────────
+_SECTION_RE = re.compile(r'(?=\n## )')
+
+
+def split_compiled_by_section(compiled: str):
+    """compile_sections 결과물을 (문서 헤더, 섹션 리스트, 감사 로그) 로 분리.
+
+    Returns:
+        doc_header (str): "# 종합 백서\n" 등 문서 제목부
+        sections (List[str]): ["\n## Title  \n_대상 기간: ..._\n\nbody\n", ...]
+        audit_log (str): "\n---\n\n### 감사 로그\n..." 또는 ""
+    """
+    # 감사 로그 분리
+    audit = ""
+    audit_sep = "\n---\n"
+    pos = compiled.rfind(audit_sep)
+    if pos >= 0 and "수행감사 로그" in compiled[pos:] or pos >= 0 and "### 감사 로그" in compiled[pos:]:
+        audit = compiled[pos:]
+        compiled = compiled[:pos]
+
+    parts = _SECTION_RE.split(compiled)
+    doc_header = parts[0] if parts else ""
+    sections = parts[1:] if len(parts) > 1 else []
+
+    return doc_header, sections, audit
+
+
+def split_section_header_body(section: str):
+    """섹션 텍스트에서 헤더(## 제목 + _대상 기간_)와 본문을 분리.
+
+    Returns:
+        header (str): "\n## Title  \n_대상 기간: YYYY-MM_\n\n"
+        body (str): "본문 텍스트..."
+    """
+    # 기간 라인 이후의 첫 빈 줄에서 분리
+    match = re.search(r'(_대상 기간:.*?_)\n\n', section)
+    if match:
+        split_pos = match.end()
+        return section[:split_pos], section[split_pos:]
+    # 폴백: 첫 번째 빈 줄에서 분리
+    idx = section.find('\n\n')
+    if idx >= 0:
+        return section[:idx + 2], section[idx + 2:]
+    return section, ""

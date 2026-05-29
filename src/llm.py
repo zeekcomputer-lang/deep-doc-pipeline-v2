@@ -257,6 +257,7 @@ def structured_call(
     role: str = "default",
     temperature: float = 0.0,
     max_retries: int = 3,
+    stream: bool = False,
 ) -> T:
     """GPT-OSS 호환 Pydantic 강제 LLM 호출.
 
@@ -266,6 +267,7 @@ def structured_call(
       - 응답은 extract_json() 3단 파서로 추출 후 Pydantic model_validate.
       - 파싱/검증 실패 시 직전 응답을 assistant 메시지로 넘겨 "JSON만 다시 출력" 재요청.
       - 모든 API 호출은 _rate_limiter 를 통해 분당/동시 호출 수 제한.
+      - stream=True: SSE 스트리밍으로 첫 토큰 즉시 수신 → 게이트웨이 504 타임아웃 방지.
     """
     model = get_model(role)
     schema = response_model.model_json_schema()
@@ -296,12 +298,26 @@ def structured_call(
     for attempt in range(max_retries):
         try:
             with _rate_limiter:
-                response = _client.chat.completions.create(
-                    model=model,
-                    messages=work_messages,
-                    temperature=temperature,
-                )
-            last_raw = response.choices[0].message.content or ""
+                if stream:
+                    # SSE 스트리밍: 첫 토큰이 도달하면 게이트웨이 read_timeout 리셋
+                    response_stream = _client.chat.completions.create(
+                        model=model,
+                        messages=work_messages,
+                        temperature=temperature,
+                        stream=True,
+                    )
+                    _chunks: list = []
+                    for chunk in response_stream:
+                        if chunk.choices and chunk.choices[0].delta.content:
+                            _chunks.append(chunk.choices[0].delta.content)
+                    last_raw = "".join(_chunks)
+                else:
+                    response = _client.chat.completions.create(
+                        model=model,
+                        messages=work_messages,
+                        temperature=temperature,
+                    )
+                    last_raw = response.choices[0].message.content or ""
 
             # extract_json → Pydantic 검증
             parsed_dict = extract_json(last_raw, expect="object")

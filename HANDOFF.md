@@ -45,8 +45,8 @@ projects/deep-doc-pipeline/
     ├── schemas.py         7종 Pydantic (hallucinated_terms 강제 포함)
     ├── state.py           GraphState + 3개 reducer (update_dict, operator.add ×2)
     ├── llm.py             ★ GPT-OSS 표준 + Rate Limiter + 헤더 인증
-    ├── utils.py           Pure Python (sort/filter/compile/validate)
-    ├── nodes.py           15개 노드 + 4개 라우터 함수
+    ├── utils.py           Pure Python (sort/filter/compile/validate/split)
+    ├── nodes.py           15개 노드 + 4개 라우터 (polish/fact_checker 청크드+스트리밍)
     └── graph.py           LangGraph 조립 (Send 병렬 2곳)
 ```
 
@@ -155,6 +155,7 @@ load_docs ──fanout──▶ strict_extractor (×N, 병렬 Send)
 - [x] LLM 호출부 GPT-OSS placeholder 표준 정렬 (`442f9ba`, 2026-05-29)
 - [x] Rate Limiter 도입 (12 RPM / 5 동시, 환경변수 조정 가능)
 - [x] API Key 환경변수 제거 → DEFAULT_HEADERS 헤더 인증 전환
+- [x] 504 타임아웃 대응: structured_call stream 파라미터 + 섹션별 분할 윈문/검수 (LESSONS L-011)
 - [x] Pure Python 유틸 (sort/filter/compile/validate)
 - [x] LangGraph 노드 15개 + 라우터 4개
 - [x] 그래프 조립 (Send 병렬 2곳)
@@ -173,6 +174,7 @@ load_docs ──fanout──▶ strict_extractor (×N, 병렬 Send)
 ### 🟡 미반영 권장 보강 (v1.2 후보)
 - [ ] Pure Python 단위 테스트 (pytest, chrono_sorter/context_filter 경계값)
 - ~~[ ] 병렬도 제어 (asyncio.Semaphore) — 월수 12+ 환경 대비~~ → v1.1-r2 RateLimiter 로 해결
+- ~~[ ] polish/final_fact_checker 대용량 컨텍스트 504~~ → v1.1-r3 Streaming + Section Chunking
 - [ ] `failed_docs` 상태 추가 — 3회 추출 실패 문서 추적 (현재는 silent drop)
 - [ ] JSONL 무결성 검증 강화 (BOM, 빈 줄 외 케이스)
 - [ ] LangGraph SqliteSaver 체크포인트 (Resume 기능)

@@ -17,6 +17,7 @@
 | L-008 | 의사결정 | Visibility는 도메인 비밀 유무가 1차 기준 |
 | L-009 | 커뮤니케이션 | 사용자 단답(“a”, “c”) 뒤에 추가 지시가 붙는 패턴 주의 |
 | L-010 | 호환성 | response_format 의존 제거 → 프롬프트 가드 + extract_json 3단 파서가 GPT-OSS 표준 |
+| L-011 | 아키텍처 | 대용량 LLM 컨텍스트 504: Streaming + Section Chunking 이중 방어 |
 
 ---
 
@@ -212,6 +213,35 @@ gh repo edit zeekcomputer-lang/<repo> --visibility private
 
 **원칙:**
 > LLM API 호출부를 신규 작성할 때는 반드시 `response_format` 미사용 전제로 설계하고, 프롬프트 가드 + 파서 + 재시도로 JSON을 강제할 것. `response_format`은 보너스이지 필수가 아님.
+
+---
+
+## L-011: 대용량 LLM 컨텍스트 504 타임아웃 대응
+
+**상황:**
+200건+ 데이터의 컴파일된 백서(수만 토큰)를 단일 `polish_node` / `final_fact_checker_node`에서 LLM에 전송.
+업스트림 게이트웨이의 `proxy_read_timeout` 초과로 504 발생. 타임아웃 시간 증가 불가.
+
+**잘못된 대응:**
+- 타임아웃 증가 요청 (서버 정책상 불가능한 경우 많음)
+- retry만 증가 (동일 페이로드로 동일 504 반복)
+
+**올바른 대응 (v1.1-r3):**
+1. **Streaming (`stream=True`)** — 첫 토큰 즉시 수신으로 게이트웨이 `read_timeout` 리셋. 전체 처리 시간은 동일하나 연결 유지.
+2. **Section Chunking** — 문서를 `## 섹션` 단위로 분리하여 개별 API 호출. per-call 컨텍스트 1/K로 축소.
+3. 두 전략 병행: Streaming이 `read_timeout` 해소, Chunking이 `total_timeout` 해소.
+
+**구현 노트:**
+- 헤더(§제목 + 기간)와 본문을 분리하여 본문만 LLM에 전송 → 헤더 변조 방지
+- 감사 로그(§---)는 윈문 대상에서 제외
+- `final_fact_checker`: 본문 변경 없는 섹션은 skip → 불필요 API 호출 절감
+- 섹션 수 불일치 시 전체 문서 비교로 폴백 (stream 적용)
+
+**원칙:**
+> LLM에 대용량 컨텍스트를 보낼 때는 항상 (1) 청크 분할 + (2) 스트리밍을 기본값으로 설계하라.
+> 단일 페이로드로 전체 문서를 보내는 설계는 프로덕션에서 반드시 터진다.
+
+**적용:** `src/nodes.py` polish_node, final_fact_checker_node / `src/llm.py` stream 파라미터 / `src/utils.py` split_compiled_by_section, split_section_header_body
 
 ---
 

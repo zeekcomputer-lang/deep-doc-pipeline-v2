@@ -18,6 +18,7 @@ from .llm import structured_call
 from .utils import (
     is_valid_date, chrono_sort_and_group, filter_by_period,
     validate_outline_periods, compile_sections, format_events_for_prompt,
+    split_compiled_by_section, split_section_header_body,
 )
 
 
@@ -429,40 +430,117 @@ def compiler_node(state: GraphState) -> Dict[str, Any]:
 
 
 def polish_node(state: GraphState) -> Dict[str, Any]:
-    """문장 연결만 다듬는 윤문. 사실 변경 금지."""
+    """섹션별 분할 윤문 + 스트리밍. 대용량 컨텍스트 504 타임아웃 방지.
+
+    v1.1-r3: compile_sections 결과를 섹션 단위로 분리하여 개별 윤문.
+    각 API 호출의 컨텍스트를 1/K로 축소하고, stream=True로 게이트웨이 read_timeout 리셋.
+    """
     compiled = state["final_compiled"]
-    messages = [
-        {"role": "system", "content": (
-            "너는 교정 편집자다. 입력된 본문의 사실 정보(날짜, 고유명사, 수치, 인과관계)는 "
-            "단 한 글자도 추가/삭제/수정하지 마라. 오직 문단 연결어, 호응, 어색한 문장 흐름만 "
-            "다듬어라. 새로운 정보를 절대 만들지 마라. 마크다운 구조(헤더, 리스트, 워터마크)는 유지하라."
-        )},
-        {"role": "user", "content": f"본문:\n{compiled}\n\n윤문 결과:"},
-    ]
-    result = structured_call(messages, PolishedDocument, role="writer", temperature=0.1)
-    print(f"[polish] retry={state.get('polish_retry_count', 0)} len={len(result.content)}")
-    return {"final_output": result.content}
+    retry_count = state.get("polish_retry_count", 0)
+    doc_header, sections, audit = split_compiled_by_section(compiled)
+
+    if not sections:
+        print("[polish] no sections found — skipping")
+        return {"final_output": compiled}
+
+    system_prompt = (
+        "너는 교정 편집자다. 입력된 본문의 사실 정보(날짜, 고유명사, 수치, 인과관계)는 "
+        "단 한 글자도 추가/삭제/수정하지 마라. 오직 문단 연결어, 호응, 어색한 문장 흐름만 "
+        "다듬어라. 새로운 정보를 절대 만들지 마라. "
+        "마크다운 구조(헤더, 리스트, 워터마크 블록인용)는 유지하라."
+    )
+
+    polished_sections: List[str] = []
+    for i, section in enumerate(sections):
+        header, body = split_section_header_body(section)
+        if not body.strip():
+            polished_sections.append(section)
+            continue
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"본문:\n{body}\n\n윤문 결과:"},
+        ]
+        result = structured_call(
+            messages, PolishedDocument, role="writer",
+            temperature=0.1, stream=True,
+        )
+        polished_sections.append(header + result.content)
+        print(f"[polish] section {i + 1}/{len(sections)} retry={retry_count} "
+              f"len={len(result.content)}")
+
+    final = doc_header + "".join(polished_sections) + audit
+    print(f"[polish] done: sections={len(sections)} total_len={len(final)}")
+    return {"final_output": final}
 
 
 def final_fact_checker_node(state: GraphState) -> Dict[str, Any]:
-    """polish 결과가 final_compiled의 사실을 변형하지 않았는지 2차 검증."""
+    """섹션별 분할 2차 팩트체크 + 스트리밍. 대용량 컨텍스트 504 타임아웃 방지.
+
+    v1.1-r3: 원본과 윤문본을 섹션 단위로 분리하여 개별 검증.
+    섹션 수 불일치 시 전체 문서 비교로 폴백 (stream으로 504 방지).
+    """
     original = state["final_compiled"]
     polished = state["final_output"]
-    messages = [
-        {"role": "system", "content": (
-            "너는 최종 감사관이다. 두 문서를 비교하여 polished 버전에 original에는 없던 "
-            "고유명사/날짜/수치/사실이 추가되었거나 변형되었는지 검증하라. "
-            "문장 흐름 변화는 허용, 사실 변경만 환각으로 처리하라."
-        )},
-        {"role": "user", "content": (
-            f"[ORIGINAL]\n{original}\n\n[POLISHED]\n{polished}\n\n검증 결과:"
-        )},
-    ]
-    result = structured_call(messages, FactCheckResult, role="judge", temperature=0.0)
-    print(f"[final_fact_checker] approved={result.is_draft_approved} retry={state.get('polish_retry_count', 0)}")
+    retry_count = state.get("polish_retry_count", 0)
+
+    _, orig_sections, _ = split_compiled_by_section(original)
+    _, pol_sections, _ = split_compiled_by_section(polished)
+
+    system_prompt = (
+        "너는 최종 감사관이다. 원본과 윤문본을 비교하여 "
+        "고유명사/날짜/수치/사실이 추가되었거나 변형되었는지 검증하라. "
+        "문장 흐름 변화는 허용, 사실 변경만 환각으로 처리하라."
+    )
+
+    # 섹션 수 불일치 시 전체 문서 비교 폴백 (stream으로 504 방지)
+    if len(orig_sections) != len(pol_sections) or not orig_sections:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": (
+                f"[ORIGINAL]\n{original}\n\n[POLISHED]\n{polished}\n\n검증 결과:"
+            )},
+        ]
+        result = structured_call(messages, FactCheckResult, role="judge",
+                                temperature=0.0, stream=True)
+        print(f"[final_fact_checker] fallback-full approved={result.is_draft_approved} "
+              f"retry={retry_count}")
+        return {
+            "is_draft_approved": result.is_draft_approved,
+            "draft_feedback": result.feedback,
+        }
+
+    # 섹션별 개별 검증
+    all_approved = True
+    feedback_parts: List[str] = []
+
+    for i, (orig, pol) in enumerate(zip(orig_sections, pol_sections)):
+        _, orig_body = split_section_header_body(orig)
+        _, pol_body = split_section_header_body(pol)
+
+        # 본문 변경 없음 — 검수 불필요
+        if not orig_body.strip() or orig_body.strip() == pol_body.strip():
+            continue
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": (
+                f"[ORIGINAL]\n{orig_body}\n\n[POLISHED]\n{pol_body}\n\n검증 결과:"
+            )},
+        ]
+        result = structured_call(messages, FactCheckResult, role="judge",
+                                temperature=0.0, stream=True)
+        if not result.is_draft_approved:
+            all_approved = False
+            feedback_parts.append(f"섹션{i + 1}: {result.feedback}")
+        print(f"[final_fact_checker] section {i + 1}/{len(orig_sections)} "
+              f"approved={result.is_draft_approved}")
+
+    feedback = "; ".join(feedback_parts) if feedback_parts else "전 섹션 검증 통과"
+    print(f"[final_fact_checker] overall approved={all_approved} retry={retry_count}")
     return {
-        "is_draft_approved": result.is_draft_approved,
-        "draft_feedback": result.feedback,
+        "is_draft_approved": all_approved,
+        "draft_feedback": feedback,
     }
 
 
