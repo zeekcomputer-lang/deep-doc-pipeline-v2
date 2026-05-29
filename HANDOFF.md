@@ -3,14 +3,16 @@
 > **프로젝트:** deep-doc-pipeline (v1.1)
 > **GitHub:** https://github.com/zeekcomputer-lang/deep-doc-pipeline (PUBLIC)
 > **로컬:** `~/.openclaw/workspace/projects/deep-doc-pipeline/`
-> **최종 업데이트:** 2026-05-27
-> **상태:** 코드 작성 완료 / 실행 검증 보류 (사용자 환경 예정)
+> **최종 업데이트:** 2026-05-29
+> **상태:** 코드 작성 완료 + LLM 호출부 GPT-OSS 표준 정렬 완료 / 실행 검증 보류 (사용자 환경 예정)
 
 ---
 
 ## §0. 30초 요약
 
-저성능 LLM(gpt-oss 등) 환경에서 **환각을 구조적으로 차단**하며 200건 JSONL → 백서/현황판을 자동 생성하는 **LangGraph 파이프라인**. 순수 OpenAI SDK + Pydantic 강제 출력 + 다단 자가검증 루프 + Fail-Safe 워터마크. 11 파일 / 1482줄. **AST 문법 검증 통과 / 실제 LLM 실행은 미수행**.
+저성능 LLM(gpt-oss 등) 환경에서 **환각을 구조적으로 차단**하며 200건 JSONL → 백서/현황판을 자동 생성하는 **LangGraph 파이프라인**. 순수 OpenAI SDK + Pydantic 강제 출력 + 다단 자가검증 루프 + Fail-Safe 워터마크. 11 파일 / ~1700줄. **AST 문법 검증 통과 / 실제 LLM 실행은 미수행**.
+
+**v1.1-r1 (2026-05-29):** `src/llm.py`를 GPT-OSS placeholder 표준으로 리팩터 — `beta.parse` / `response_format` 전면 제거, `extract_json()` 3단 파서 도입, HARDCODE placeholder 패턴 적용. 표준 출처: `langgraph-excel-categorizer/categorizer.py`.
 
 다음 작업자가 가장 먼저 할 것:
 1. `SPEC.md` §1~6 통독 (15분)
@@ -37,7 +39,7 @@ projects/deep-doc-pipeline/
 └── src/
     ├── schemas.py         7종 Pydantic (hallucinated_terms 강제 포함)
     ├── state.py           GraphState + 3개 reducer (update_dict, operator.add ×2)
-    ├── llm.py             순수 OpenAI SDK + parse + JSON fallback + 3회 재시도
+    ├── llm.py             ★ GPT-OSS 표준 정렬 완료 — extract_json 3단 파서 + Pydantic 하이브리드
     ├── utils.py           Pure Python (sort/filter/compile/validate)
     ├── nodes.py           15개 노드 + 4개 라우터 함수
     └── graph.py           LangGraph 조립 (Send 병렬 2곳)
@@ -130,9 +132,11 @@ load_docs ──fanout──▶ strict_extractor (×N, 병렬 Send)
 ## §4. 절대 준수 사항 (수정 금지)
 
 1. **LangChain LLM 래퍼 사용 금지** — `from langchain.chat_models import ChatOpenAI` 같은 import 절대 추가 금지. 오직 `openai.OpenAI()` 직접 사용.
-2. **모든 LLM 응답은 Pydantic 강제** — `client.beta.chat.completions.parse` 메서드 + 응답 스키마. 일반 `chat.completions.create`는 `llm.py`의 fallback 분기에서만 사용.
-3. **Pure Python 영역에 LLM 호출 추가 금지** — `utils.py`, `chrono_sorter_node`, `compiler_node`. 이 4곳은 결정론 영역.
-4. **`LOCAL_DATA_PATH` 하드코딩 유지** — `nodes.py` 상단. 변경 시 SPEC.md §2-3 동시 갱신.
+2. **모든 LLM 응답은 Pydantic 강제** — `structured_call()` → `extract_json()` → `model_validate()` 경로. `response_format` 인자 사용 금지 (GPT-OSS 미지원).
+3. **`beta.chat.completions.parse` 사용 금지** — v1.1-r1에서 제거됨. GPT-OSS 호환성을 위해 프롬프트 가드 + 3단 파서로 대체.
+4. **Pure Python 영역에 LLM 호출 추가 금지** — `utils.py`, `chrono_sorter_node`, `compiler_node`. 이 4곳은 결정론 영역.
+5. **`LOCAL_DATA_PATH` 하드코딩 유지** — `nodes.py` 상단. 변경 시 SPEC.md §2-3 동시 갱신.
+6. **LLM 호출 표준 출처** — `langgraph-excel-categorizer/categorizer.py`의 HARDCODE placeholder + `extract_json` + 재시도 패턴이 기준. 신규 LLM 호출 시 이 패턴을 따를 것.
 
 ---
 
@@ -142,7 +146,8 @@ load_docs ──fanout──▶ strict_extractor (×N, 병렬 Send)
 - [x] SPEC v1.0 → v1.1 (구조적 위험 3건 보강)
 - [x] Pydantic 스키마 (7종)
 - [x] GraphState (v1.1 필드 4종 포함)
-- [x] LLM 클라이언트 (parse + JSON fallback + 3회 재시도)
+- [x] LLM 클라이언트 (GPT-OSS 표준: extract_json 3단 파서 + Pydantic + 3회 재시도)
+- [x] LLM 호출부 GPT-OSS placeholder 표준 정렬 (`442f9ba`, 2026-05-29)
 - [x] Pure Python 유틸 (sort/filter/compile/validate)
 - [x] LangGraph 노드 15개 + 라우터 4개
 - [x] 그래프 조립 (Send 병렬 2곳)
@@ -265,7 +270,7 @@ load_docs ──fanout──▶ strict_extractor (×N, 병렬 Send)
 | 증상 | 1순위 의심 | 확인 방법 |
 |------|----------|----------|
 | `ModuleNotFoundError: langgraph.types` | langgraph 버전 | `pip show langgraph` → 0.2.40+ 확인 |
-| 모든 노드에서 `structured_call failed` | gpt-oss parse 미지원 | `llm.py`에 print 추가, fallback 진입 확인 |
+| 모든 노드에서 `structured_call failed` | JSON 파싱 반복 실패 | `[structured_call][retry]` 로그 확인, extract_json 단계별 디버깅 |
 | 영어로 응답 | 시스템 프롬프트 | `nodes.py` 모든 system 메시지에 "반드시 한국어로 응답하라" 추가 |
 | recursion_limit exceeded | outline 길이 | `main.py`의 200 → 500 상향, 또는 outline 6개 이하 제한 |
 | `KeyError: 'target_period'` | planner 환각 | `planner_critique_node`의 Python 검증 로그 확인 → 재시도 카운트 증가 정상 |

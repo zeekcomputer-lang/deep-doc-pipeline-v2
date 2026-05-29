@@ -1,4 +1,4 @@
-# LESSONS.md — 누적 교훈 인덱스
+# LESSONS.md - 누적 교훈 인덱스
 
 > 다음 AI Agent가 같은 실수를 반복하지 않도록 정리한 교훈 카드.
 > 본 프로젝트뿐 아니라 유사 LangGraph/LLM 파이프라인 작업 시 참조.
@@ -15,14 +15,15 @@
 | L-006 | LangGraph | reducer는 단조 증가에 자연스러움. 스코프 초기화 의도 필드는 우회 설계 |
 | L-007 | 환경 | exec 셸 컨텍스트는 .bashrc 자동 로딩 X → GH_TOKEN 명시 export |
 | L-008 | 의사결정 | Visibility는 도메인 비밀 유무가 1차 기준 |
-| L-009 | 커뮤니케이션 | 사용자 단답("a", "c") 뒤에 추가 지시가 붙는 패턴 주의 |
+| L-009 | 커뮤니케이션 | 사용자 단답(“a”, “c”) 뒤에 추가 지시가 붙는 패턴 주의 |
+| L-010 | 호환성 | response_format 의존 제거 → 프롬프트 가드 + extract_json 3단 파서가 GPT-OSS 표준 |
 
 ---
 
 ## L-001: 사용자 명세서 코드 오타 처리
 
 **상황:**
-원본 명세서 v1.0의 `update_dict` 함수가 `return {a, b}` (set literal — 실행 불가)로 작성되어 있었음.
+원본 명세서 v1.0의 `update_dict` 함수가 `return {a, b}` (set literal - 실행 불가)로 작성되어 있었음.
 
 **잘못된 대응:**
 명세서를 그대로 코드에 옮기기 → 런타임 에러.
@@ -116,7 +117,7 @@ gpt-oss를 Ollama/vLLM으로 띄울 때 "OpenAI 호환"이지만 `client.beta.ch
 - 부작용: 로그상으로는 누적된 채 보임 (디버깅 혼선)
 
 **더 나은 설계 (v1.2 후보):**
-- `Dict[int, List[str]]` 구조로 변경 — 섹션 인덱스를 키로 가짐
+- `Dict[int, List[str]]` 구조로 변경 - 섹션 인덱스를 키로 가짐
 - reducer는 `update_dict` 사용
 - writer는 `state["hallucinated_tokens"].get(current_idx, [])` 로 조회
 
@@ -181,7 +182,7 @@ gh repo edit zeekcomputer-lang/<repo> --visibility private
 - 답변 파싱 시 **첫 글자만 보지 말고 전체 메시지 읽기**
 - 단답 + 추가 지시 = 옵션 선택 후 새 작업 의뢰 패턴
 - 응답 시 두 요소를 모두 다룸:
-  1. "옵션 C 선택 — 현 작업 종료 확인"
+  1. "옵션 C 선택 - 현 작업 종료 확인"
   2. "추가 지시: GitHub 업로드 진행합니다"
 
 **나쁜 예:**
@@ -189,6 +190,28 @@ gh repo edit zeekcomputer-lang/<repo> --visibility private
 
 **좋은 예:**
 > "C로 종료 확인. 동시에 GitHub 업로드 진행하겠습니다."
+
+---
+
+## L-010: response_format 의존 제거 — GPT-OSS placeholder 표준
+
+**상황:**
+`src/llm.py`가 `client.beta.chat.completions.parse` (Structured Outputs) + `response_format={"type":"json_object"}` 2단 fallback으로 구현되어 있었으나, GPT-OSS 환경에서는 둘 다 미지원.
+
+**잘못된 대응:**
+“OpenAI 호환” 표기를 신뢰하고 `beta.parse`/`response_format`을 1차 시도하는 코드 → GPT-OSS에서 즉시 실패.
+
+**올바른 대응 (v1.1-r1):**
+1. `response_format` 인자 전면 제거
+2. Pydantic JSON Schema를 system 프롬프트에 명시 첨부 (출력 규약 가드)
+3. `extract_json()` 3단 폴백 파서 (raw → 코드펜스 → 균형 스컨)
+4. 재시도 시 직전 응답을 assistant 메시지로 넘겨 “JSON만 다시 출력하라” 재요청
+5. `extract_json()` 결과를 `model_validate()`로 Pydantic 검증 유지
+
+**표준 출처:** `langgraph-excel-categorizer/categorizer.py`의 `llm_chat_json()` + `extract_json()` 패턴.
+
+**원칙:**
+> LLM API 호출부를 신규 작성할 때는 반드시 `response_format` 미사용 전제로 설계하고, 프롬프트 가드 + 파서 + 재시도로 JSON을 강제할 것. `response_format`은 보너스이지 필수가 아님.
 
 ---
 
