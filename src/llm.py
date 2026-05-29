@@ -2,6 +2,9 @@
 순수 OpenAI SDK 클라이언트 (LangChain 래퍼 금지).
 GPT-OSS 등 OpenAI 호환 엔드포인트 지원.
 
+인증: HTTP 헤더 기반 (DEFAULT_HEADERS). API Key 환경변수 미사용.
+호출 제한: 슬라이딩 윈도우 Rate Limiter + 동시 요청 Semaphore.
+
 JSON 강제 전략 (response_format 미사용 — GPT-OSS 미지원):
   1) 프롬프트 가드: Pydantic JSON Schema + 출력 규약 자동 첨부
   2) extract_json(): 3단 폴백 파서 (raw → 코드펜스 → 균형 스캔)
@@ -12,6 +15,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
+from collections import deque
 from typing import Any, Dict, Optional, Type, TypeVar
 
 from openai import OpenAI
@@ -22,15 +28,13 @@ T = TypeVar("T", bound=BaseModel)
 # ──────────────────────────────────────────────────────────────────────────────
 # 접속 설정 — HARDCODE placeholder 패턴
 # ──────────────────────────────────────────────────────────────────────────────
-# 환경변수(OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL) 가 설정되어 있으면 그 값이 우선.
-# 두 방식 다 사용 가능하며, 아래 None / 빈 문자열을 실제 값으로 바꾸면 하드코딩 완료.
+# 환경변수(OPENAI_BASE_URL / OPENAI_MODEL) 가 설정되어 있으면 그 값이 우선.
+# 아래 None / 빈 문자열을 실제 값으로 바꾸면 하드코딩 완료.
+# 인증은 DEFAULT_HEADERS 의 토큰 헤더로 처리 (API Key 환경변수 미사용).
 
 # 예) OPENAI_BASE_URL = "https://your-internal-gateway.example.com/v1"
 # 예) OPENAI_BASE_URL = "http://localhost:8000/v1"
 OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL") or None  # <-- HARDCODE
-
-# 예) OPENAI_API_KEY = "sk-xxx…xxxx"
-OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY") or None  # <-- HARDCODE
 
 # 예) OPENAI_MODEL = "gpt-oss-20b"  /  "gpt-oss-120b"  /  "내부-모델-id"
 # 본 파이프라인은 GPT-OSS(오픈소스/로컬) 모델 사용을 전제로 함.
@@ -38,13 +42,13 @@ OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY") or None  # <-- HARDC
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-oss-20b")  # <-- HARDCODE
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 추가 HTTP 헤더 (OpenAI default_headers 로 주입됨)
+# 인증 헤더 (OpenAI default_headers 로 주입됨)
 # ──────────────────────────────────────────────────────────────────────────────
 # [HARDCODE HERE] 아래 dict 의 주석을 해제하고 실제 헤더 값으로 교체하세요.
 # 환경변수 OPENAI_EXTRA_HEADERS (JSON 문자열) 를 추가로 병합할 수 있습니다.
 DEFAULT_HEADERS: Dict[str, str] = {
-    # "Authorization":   "Bearer <YOUR_TOKEN_HERE>",          # (필요 시) 별도 인증 헤더
-    # "X-API-Key":       "<YOUR_API_KEY_HERE>",               # (필요 시) 게이트웨이 API Key
+    # "Authorization":   "Bearer <YOUR_TOKEN_HERE>",          # 인증 토큰
+    # "X-API-Key":       "<YOUR_API_KEY_HERE>",               # 게이트웨이 API Key
     # "X-Project-Id":    "<YOUR_PROJECT_ID>",                 # 프로젝트 식별
     # "X-Tenant":        "<YOUR_TENANT_ID>",                  # 멀티 테넌트
     # "X-Request-Source": "deep-doc-pipeline",                # 호출 출처 태깅
@@ -56,6 +60,15 @@ if _extra:
         DEFAULT_HEADERS.update(json.loads(_extra))
     except json.JSONDecodeError:
         print(f"[WARN] OPENAI_EXTRA_HEADERS JSON 파싱 실패: {_extra}")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 호출 제한 (Rate Limiting)
+# ──────────────────────────────────────────────────────────────────────────────
+# 200건 이상 데이터 처리 시 Send 병렬 디스패치로 API 폭주를 방지.
+# LLM_MAX_RPM: 분당 최대 호출 수 (기본 12 → 실측 10~15/min 범위)
+# LLM_MAX_CONCURRENT: 동시 호출 상한 (스레드 자원 보호)
+LLM_MAX_RPM: int = int(os.getenv("LLM_MAX_RPM", "12"))
+LLM_MAX_CONCURRENT: int = int(os.getenv("LLM_MAX_CONCURRENT", "5"))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 역할별 모델 분리 (deep-doc-pipeline 고유 요구사항)
@@ -76,12 +89,62 @@ def get_model(role: str = "default") -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Rate Limiter — 슬라이딩 윈도우 + 동시 요청 제한
+# ──────────────────────────────────────────────────────────────────────────────
+class RateLimiter:
+    """Thread-safe 슬라이딩 윈도우 rate limiter + concurrency semaphore.
+
+    Send API 병렬 디스패치 환경에서 LLM 호출 속도를 제어한다.
+    context manager 로 사용:
+        with _rate_limiter:
+            response = client.chat.completions.create(...)
+    """
+
+    def __init__(self, max_per_minute: int, max_concurrent: int):
+        self._max_rpm = max_per_minute
+        self._window = 60.0
+        self._timestamps: deque = deque()
+        self._lock = threading.Lock()
+        self._semaphore = threading.Semaphore(max_concurrent)
+
+    def __enter__(self):
+        # 1) 동시 요청 상한 대기
+        self._semaphore.acquire()
+        # 2) 분당 호출 한도 대기
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                # 윈도우 밖 타임스탬프 제거
+                while self._timestamps and self._timestamps[0] <= now - self._window:
+                    self._timestamps.popleft()
+                if len(self._timestamps) < self._max_rpm:
+                    self._timestamps.append(now)
+                    return self
+                # 가장 오래된 호출이 윈도우를 벗어날 때까지 대기
+                wait = self._timestamps[0] + self._window - now
+            # Lock 해제 후 sleep (다른 스레드 차단 방지)
+            if wait > 0:
+                print(f"  [rate_limiter] {self._max_rpm}/min 한도 도달 — {wait:.1f}s 대기")
+                time.sleep(wait + 0.1)
+
+    def __exit__(self, *exc):
+        self._semaphore.release()
+        return False
+
+    def __repr__(self) -> str:
+        return f"RateLimiter(rpm={self._max_rpm}, concurrent={self._semaphore._value})"
+
+
+_rate_limiter = RateLimiter(LLM_MAX_RPM, LLM_MAX_CONCURRENT)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # OpenAI 클라이언트
 # ──────────────────────────────────────────────────────────────────────────────
 def _make_client() -> OpenAI:
-    kwargs: Dict[str, Any] = {}
-    if OPENAI_API_KEY:
-        kwargs["api_key"] = OPENAI_API_KEY
+    kwargs: Dict[str, Any] = {
+        "api_key": "unused",  # 인증은 DEFAULT_HEADERS 로 처리; SDK 필수 인자 충족용
+    }
     if OPENAI_BASE_URL:
         kwargs["base_url"] = OPENAI_BASE_URL
     if DEFAULT_HEADERS:
@@ -186,7 +249,7 @@ def extract_json(text: str, *, expect: str = "object") -> Any:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# structured_call — Pydantic 강제 + GPT-OSS 호환 JSON 강제
+# structured_call — Pydantic 강제 + GPT-OSS 호환 JSON 강제 + Rate Limiting
 # ──────────────────────────────────────────────────────────────────────────────
 def structured_call(
     messages: list,
@@ -202,6 +265,7 @@ def structured_call(
       - Pydantic JSON Schema + 출력 규약을 system 프롬프트에 첨부하여 JSON 응답 유도.
       - 응답은 extract_json() 3단 파서로 추출 후 Pydantic model_validate.
       - 파싱/검증 실패 시 직전 응답을 assistant 메시지로 넘겨 "JSON만 다시 출력" 재요청.
+      - 모든 API 호출은 _rate_limiter 를 통해 분당/동시 호출 수 제한.
     """
     model = get_model(role)
     schema = response_model.model_json_schema()
@@ -231,11 +295,12 @@ def structured_call(
 
     for attempt in range(max_retries):
         try:
-            response = _client.chat.completions.create(
-                model=model,
-                messages=work_messages,
-                temperature=temperature,
-            )
+            with _rate_limiter:
+                response = _client.chat.completions.create(
+                    model=model,
+                    messages=work_messages,
+                    temperature=temperature,
+                )
             last_raw = response.choices[0].message.content or ""
 
             # extract_json → Pydantic 검증

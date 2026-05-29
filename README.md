@@ -37,7 +37,26 @@ cd projects/deep-doc-pipeline
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# .env 편집: OPENAI_BASE_URL, OPENAI_API_KEY, MODEL_NAME
+# .env 편집: OPENAI_BASE_URL, OPENAI_MODEL
+# 인증 헤더: src/llm.py DEFAULT_HEADERS 의 placeholder 교체
+```
+
+### 인증
+
+API Key 환경변수가 아닌 **HTTP 헤더**로 인증합니다.
+`src/llm.py`의 `DEFAULT_HEADERS` dict에서 필요한 헤더의 주석을 해제하고 실제 값으로 교체하세요.
+
+```python
+# src/llm.py 내
+DEFAULT_HEADERS = {
+    "Authorization": "Bearer <YOUR_TOKEN_HERE>",
+    # ...
+}
+```
+
+또는 환경변수 `OPENAI_EXTRA_HEADERS`로 JSON 주입:
+```bash
+export OPENAI_EXTRA_HEADERS='{"Authorization": "Bearer xxx"}'
 ```
 
 ### gpt-oss 엔드포인트 예시
@@ -47,8 +66,7 @@ cp .env.example .env
 ollama pull gpt-oss:20b
 # .env:
 #   OPENAI_BASE_URL=http://localhost:11434/v1
-#   OPENAI_API_KEY=ollama
-#   MODEL_NAME=gpt-oss:20b
+#   OPENAI_MODEL=gpt-oss:20b
 ```
 
 **vLLM:**
@@ -56,9 +74,20 @@ ollama pull gpt-oss:20b
 vllm serve openai/gpt-oss-20b --port 8000
 # .env:
 #   OPENAI_BASE_URL=http://localhost:8000/v1
-#   OPENAI_API_KEY=EMPTY
-#   MODEL_NAME=openai/gpt-oss-20b
+#   OPENAI_MODEL=openai/gpt-oss-20b
 ```
+
+### 호출 제한 (Rate Limiting)
+
+200건 이상 데이터 처리 시 `Send` 병렬 디스패치로 인한 API 폭주를 방지합니다.
+
+| 환경변수 | 기본값 | 설명 |
+|---------|-------|------|
+| `LLM_MAX_RPM` | 12 | 분당 최대 호출 수 (10~15 권장) |
+| `LLM_MAX_CONCURRENT` | 5 | 동시 호출 상한 (스레드 자원 보호) |
+
+슬라이딩 윈도우 방식으로 60초 내 호출 수를 제한하며, Semaphore로 동시 요청 수를 추가 제어합니다.
+한도 도달 시 자동 대기하므로 품질에는 영향 없으며, 처리 시간만 비례 증가합니다.
 
 ## 실행
 
@@ -92,3 +121,4 @@ python -m main --format status_report
 
 - gpt-oss는 OpenAI `response_format=json_schema` 호환을 권장하나, 엔진(Ollama 버전 등) 미지원 시 `llm.py`의 JSON 모드 fallback으로 자동 전환.
 - 200건 입력 시 API 호출 약 `200(추출) + M(월별) + 1(테마) + (K × 평균 2.x 재시도)` 회 예상. 노드별 모델 분리 권장.
+- Rate Limiter(기본 12 RPM)로 인해 200건 기준 전체 처리에 약 25~40분 소요. `LLM_MAX_RPM` 조정 가능.

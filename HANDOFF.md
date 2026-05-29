@@ -4,7 +4,7 @@
 > **GitHub:** https://github.com/zeekcomputer-lang/deep-doc-pipeline (PUBLIC)
 > **로컬:** `~/.openclaw/workspace/projects/deep-doc-pipeline/`
 > **최종 업데이트:** 2026-05-29
-> **상태:** 코드 작성 완료 + LLM 호출부 GPT-OSS 표준 정렬 완료 / 실행 검증 보류 (사용자 환경 예정)
+> **상태:** 코드 작성 완료 + Rate Limiter 및 헤더 인증 전환 완료 / 실행 검증 보류 (사용자 환경 예정)
 
 ---
 
@@ -13,6 +13,11 @@
 저성능 LLM(gpt-oss 등) 환경에서 **환각을 구조적으로 차단**하며 200건 JSONL → 백서/현황판을 자동 생성하는 **LangGraph 파이프라인**. 순수 OpenAI SDK + Pydantic 강제 출력 + 다단 자가검증 루프 + Fail-Safe 워터마크. 11 파일 / ~1700줄. **AST 문법 검증 통과 / 실제 LLM 실행은 미수행**.
 
 **v1.1-r1 (2026-05-29):** `src/llm.py`를 GPT-OSS placeholder 표준으로 리팩터 — `beta.parse` / `response_format` 전면 제거, `extract_json()` 3단 파서 도입, HARDCODE placeholder 패턴 적용. 표준 출처: `langgraph-excel-categorizer/categorizer.py`.
+
+**v1.1-r2 (2026-05-29):** Rate Limiter 도입 + API Key 환경변수 제거 + 헤더 기반 인증 전환.
+- `RateLimiter` 클래스: 슬라이딩 윈도우(60s) + Semaphore 이중 제어
+- 기본 12 RPM / 5 동시 호출. 환경변수 `LLM_MAX_RPM`, `LLM_MAX_CONCURRENT` 조정 가능
+- `OPENAI_API_KEY` 환경변수 제거, `DEFAULT_HEADERS` placeholder로 토큰 전달
 
 다음 작업자가 가장 먼저 할 것:
 1. `SPEC.md` §1~6 통독 (15분)
@@ -29,7 +34,7 @@ projects/deep-doc-pipeline/
 ├── README.md              실행 가이드 + gpt-oss 엔드포인트 예시
 ├── HANDOFF.md             ★ 이 문서
 ├── requirements.txt       openai>=1.50, langgraph>=0.2.40, pydantic>=2.7, python-dotenv
-├── .env.example           OPENAI_BASE_URL / OPENAI_API_KEY / MODEL_NAME
+├── .env.example           OPENAI_BASE_URL / OPENAI_MODEL / LLM_MAX_RPM
 ├── .gitignore             Python 캐시, .env, output.md 제외
 ├── main.py                argparse + recursion_limit=200 + graph.invoke
 ├── data/
@@ -39,7 +44,7 @@ projects/deep-doc-pipeline/
 └── src/
     ├── schemas.py         7종 Pydantic (hallucinated_terms 강제 포함)
     ├── state.py           GraphState + 3개 reducer (update_dict, operator.add ×2)
-    ├── llm.py             ★ GPT-OSS 표준 정렬 완료 — extract_json 3단 파서 + Pydantic 하이브리드
+    ├── llm.py             ★ GPT-OSS 표준 + Rate Limiter + 헤더 인증
     ├── utils.py           Pure Python (sort/filter/compile/validate)
     ├── nodes.py           15개 노드 + 4개 라우터 함수
     └── graph.py           LangGraph 조립 (Send 병렬 2곳)
@@ -148,6 +153,8 @@ load_docs ──fanout──▶ strict_extractor (×N, 병렬 Send)
 - [x] GraphState (v1.1 필드 4종 포함)
 - [x] LLM 클라이언트 (GPT-OSS 표준: extract_json 3단 파서 + Pydantic + 3회 재시도)
 - [x] LLM 호출부 GPT-OSS placeholder 표준 정렬 (`442f9ba`, 2026-05-29)
+- [x] Rate Limiter 도입 (12 RPM / 5 동시, 환경변수 조정 가능)
+- [x] API Key 환경변수 제거 → DEFAULT_HEADERS 헤더 인증 전환
 - [x] Pure Python 유틸 (sort/filter/compile/validate)
 - [x] LangGraph 노드 15개 + 라우터 4개
 - [x] 그래프 조립 (Send 병렬 2곳)
@@ -165,7 +172,7 @@ load_docs ──fanout──▶ strict_extractor (×N, 병렬 Send)
 
 ### 🟡 미반영 권장 보강 (v1.2 후보)
 - [ ] Pure Python 단위 테스트 (pytest, chrono_sorter/context_filter 경계값)
-- [ ] 병렬도 제어 (asyncio.Semaphore) — 월수 12+ 환경 대비
+- ~~[ ] 병렬도 제어 (asyncio.Semaphore) — 월수 12+ 환경 대비~~ → v1.1-r2 RateLimiter 로 해결
 - [ ] `failed_docs` 상태 추가 — 3회 추출 실패 문서 추적 (현재는 silent drop)
 - [ ] JSONL 무결성 검증 강화 (BOM, 빈 줄 외 케이스)
 - [ ] LangGraph SqliteSaver 체크포인트 (Resume 기능)
@@ -187,6 +194,7 @@ load_docs ──fanout──▶ strict_extractor (×N, 병렬 Send)
 1. `./data/records.jsonl`로 교체
 2. **반드시 노드별 모델 분리 권장** — `.env`의 `EXTRACTOR_MODEL`/`JUDGE_MODEL` 주석 해제
 3. 비용 추정: `200(추출) + M(월별) + 1(테마) + K×2.x(집필 평균 재시도) + 3(폴리시 라인)` API 호출
+4. Rate Limiter 기본 12 RPM → 200건 기준 전체 약 25~40분 소요. `LLM_MAX_RPM` 환경변수로 조정 가능
 4. SqliteSaver 도입 권장 (§5 미반영 보강) — 200건은 1회 실패 시 재실행 비용 큼
 
 ### 시나리오 C: "v1.2로 보강해줘"
@@ -255,7 +263,7 @@ load_docs ──fanout──▶ strict_extractor (×N, 병렬 Send)
    - `client.beta.chat.completions.parse`의 gpt-oss 엔진 호환성
    - Pydantic v2 `model_json_schema()`가 일부 엔진에서 너무 큰 스키마로 거부될 가능성
 
-2. **200건 입력 시 API 폭주** — 현재 `Send`로 200건 동시 디스패치. 엔진의 동시 요청 한도 초과 가능. Semaphore 도입 미완.
+2. ~~**200건 입력 시 API 폭주**~~ — **v1.1-r2에서 해결.** `RateLimiter`(기본 12 RPM, 5 동시)로 `structured_call` 내 모든 API 호출 제어. 한도 도달 시 자동 대기 후 재개.
 
 3. **한국어 강제 미명시** — 시스템 프롬프트에 "한국어로 응답하라" 명시 안 됨. gpt-oss는 학습 데이터에 따라 영어로 응답할 수 있음. 필요 시 모든 system 메시지 앞에 추가.
 
@@ -271,6 +279,7 @@ load_docs ──fanout──▶ strict_extractor (×N, 병렬 Send)
 |------|----------|----------|
 | `ModuleNotFoundError: langgraph.types` | langgraph 버전 | `pip show langgraph` → 0.2.40+ 확인 |
 | 모든 노드에서 `structured_call failed` | JSON 파싱 반복 실패 | `[structured_call][retry]` 로그 확인, extract_json 단계별 디버깅 |
+| `[rate_limiter] ... 대기` 로그 빈번 | RPM 한도 너무 낮음 | `LLM_MAX_RPM` 상향 (기본 12, 엔진 허용 범위 내) |
 | 영어로 응답 | 시스템 프롬프트 | `nodes.py` 모든 system 메시지에 "반드시 한국어로 응답하라" 추가 |
 | recursion_limit exceeded | outline 길이 | `main.py`의 200 → 500 상향, 또는 outline 6개 이하 제한 |
 | `KeyError: 'target_period'` | planner 환각 | `planner_critique_node`의 Python 검증 로그 확인 → 재시도 카운트 증가 정상 |
@@ -287,7 +296,7 @@ cd ~/.openclaw/workspace/projects/deep-doc-pipeline
 # 환경 셋업
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env  # 편집 필수
+cp .env.example .env  # .env 편집 + src/llm.py DEFAULT_HEADERS placeholder 교체
 
 # 데이터 (15건 더미)
 python -m scripts.gen_dummy
