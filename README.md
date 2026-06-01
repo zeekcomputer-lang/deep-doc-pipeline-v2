@@ -1,4 +1,4 @@
-# Deep Doc Pipeline (v1.4)
+# Deep Doc Pipeline (v1.5)
 
 JSONL 문서 → 영문 분석·집필 → 한국어 백서 자동 생성 파이프라인.
 LangGraph + OpenAI SDK + Pydantic 강제 출력.

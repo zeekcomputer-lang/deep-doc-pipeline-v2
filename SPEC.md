@@ -19,7 +19,13 @@
 > - 504 국부 감축: `@retry_on_504` 데코레이터 + `effective_budget()` + `Timeout504Error`
 > - user 메시지 절단 금지, 노드 재실행으로 분할 로직 재생성
 > - `max_tokens=24,000` + `reasoning_effort="high"` 전역 적용
-> - 영문 원본 항상 분리 저장 (`_en.md`), 번역 검증 50%/30회/best-of-N
+> - 영문 원본 항상 분리 저장 (`_en.md`)
+>
+> **v1.5 변경 요약 (2026-06-01):**
+> - 비교/검증 루프 제거: `final_fact_checker` + `translation_checker` 루프 전체 삭제
+> - 직선 흐름: compiler → polish → prepare_translation → translate → END
+> - DOCX 변환 스크립트 추가 (`scripts/md_to_docx.py`)
+> - `--reasoning {high,medium}` CLI 인자, 504 2회 초과 시 medium 자동 전환
 
 ---
 
