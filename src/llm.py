@@ -238,7 +238,7 @@ def structured_call(
     messages: list,
     response_model: Type[T],
     role: str = "default",
-    temperature: float = 0.1,
+    temperature: float = 0.0,
     max_retries: int = 3,
     stream: bool = False,
     reasoning_effort: str = "high",

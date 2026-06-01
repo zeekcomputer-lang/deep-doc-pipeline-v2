@@ -113,7 +113,7 @@ def strict_extractor_node(payload: Dict[str, Any]) -> Dict[str, Any]:
         psub("extractor", f"doc {idx} truncated: {size/1024:.1f}KB → target fit")
 
     try:
-        ev = structured_call(messages, ExtractedEvent, role="extractor", temperature=0.1)
+        ev = structured_call(messages, ExtractedEvent, role="extractor", temperature=0.0)
         if not is_valid_date(ev.date):
             psub("extractor", f"doc {idx} invalid date '{ev.date}' — dropped")
             return {"extracted_events": []}
@@ -168,7 +168,7 @@ def period_summarizer_node(payload: Dict[str, Any]) -> Dict[str, Any]:
     size = measure_messages_bytes(messages) + guard_overhead
 
     if size <= BUDGET_BYTES:
-        result = structured_call(messages, PeriodSummary, role="default", temperature=0.1)
+        result = structured_call(messages, PeriodSummary, role="default", temperature=0.2)
         plog("period_summarizer", f"{period}: {result.summary[:60]}...")
         return {"period_summaries": {period: result.summary}}
 
@@ -185,7 +185,7 @@ def period_summarizer_node(payload: Dict[str, Any]) -> Dict[str, Any]:
     for batch in batches:
         batch_text = format_events_for_prompt(batch)
         batch_msgs = _build_messages(batch_text)
-        sub = structured_call(batch_msgs, PeriodSummary, role="default", temperature=0.1)
+        sub = structured_call(batch_msgs, PeriodSummary, role="default", temperature=0.2)
         sub_summaries.append(sub.summary)
 
     # Merge sub-summaries
@@ -202,7 +202,7 @@ def period_summarizer_node(payload: Dict[str, Any]) -> Dict[str, Any]:
             "Unified 3-sentence summary:"
         )},
     ]
-    merged = structured_call(merge_messages, PeriodSummary, role="default", temperature=0.1)
+    merged = structured_call(merge_messages, PeriodSummary, role="default", temperature=0.2)
     plog("period_summarizer", f"{period}: merged summary: {merged.summary[:60]}...")
     return {"period_summaries": {period: merged.summary}}
 
@@ -244,7 +244,7 @@ def theme_analyzer_node(state: GraphState) -> Dict[str, Any]:
         messages = _build_messages(joined)
         size = measure_messages_bytes(messages) + guard_overhead
 
-    result = structured_call(messages, GlobalTheme, role="default", temperature=0.1)
+    result = structured_call(messages, GlobalTheme, role="default", temperature=0.3)
     plog("theme_analyzer", f"theme: {result.theme[:80]}...")
     return {"global_theme": result.theme}
 
@@ -299,7 +299,7 @@ def draft_planner_node(state: GraphState) -> Dict[str, Any]:
         new_size = measure_messages_bytes(messages) + guard_overhead
         plog("draft_planner", f"budget exceeded ({size/1024:.1f}KB → {new_size/1024:.1f}KB) — summaries truncated")
 
-    result = structured_call(messages, Outline, role="default", temperature=0.1)
+    result = structured_call(messages, Outline, role="default", temperature=0.3)
     items = [it.model_dump() for it in result.items]
     plog("draft_planner", f"outline items={len(items)}")
     return {"outline": items}
@@ -371,7 +371,7 @@ def planner_critique_node(state: GraphState) -> Dict[str, Any]:
         messages = _build_messages(outline_text)
         plog("planner_critique", f"budget exceeded ({size/1024:.1f}KB) — outline intent truncated")
 
-    result = structured_call(messages, OutlineCritique, role="judge", temperature=0.1)
+    result = structured_call(messages, OutlineCritique, role="judge", temperature=0.0)
     retry = state.get("outline_retry_count", 0) + (0 if result.is_outline_approved else 1)
     plog("planner_critique", f"approved={result.is_outline_approved} retry={retry}")
 
@@ -463,7 +463,7 @@ def section_writer_node(state: GraphState) -> Dict[str, Any]:
     size = measure_messages_bytes(messages) + guard_overhead
 
     if size <= BUDGET_BYTES:
-        result = structured_call(messages, SectionDraft, role="writer", temperature=0.1)
+        result = structured_call(messages, SectionDraft, role="writer", temperature=0.3)
         plog("section_writer", f"idx={idx} period={period} retry={retry} len={len(result.content)}")
         return {"current_draft": result.content}
 
@@ -493,7 +493,7 @@ def section_writer_node(state: GraphState) -> Dict[str, Any]:
                 f"Source events (this batch):\n{batch_text}{user_suffix}"
             )},
         ]
-        part = structured_call(batch_msgs, SectionDraft, role="writer", temperature=0.1)
+        part = structured_call(batch_msgs, SectionDraft, role="writer", temperature=0.3)
         partial_drafts.append(part.content)
 
     # Merge partial drafts
@@ -516,7 +516,7 @@ def section_writer_node(state: GraphState) -> Dict[str, Any]:
     merge_size = measure_messages_bytes(merge_msgs) + merge_guard
 
     if merge_size <= BUDGET_BYTES:
-        merged = structured_call(merge_msgs, SectionDraft, role="writer", temperature=0.1)
+        merged = structured_call(merge_msgs, SectionDraft, role="writer", temperature=0.3)
         content = merged.content
     else:
         plog("section_writer", f"idx={idx} merge also exceeded budget — concatenating")
@@ -563,7 +563,7 @@ def fact_checker_node(state: GraphState) -> Dict[str, Any]:
     size = measure_messages_bytes(messages) + guard_overhead
 
     if size <= BUDGET_BYTES:
-        result = structured_call(messages, FactCheckResult, role="judge", temperature=0.1)
+        result = structured_call(messages, FactCheckResult, role="judge", temperature=0.0)
         plog("fact_checker", f"idx={idx} approved={result.is_draft_approved} halluc={result.hallucinated_terms[:3]}")
         return {
             "is_draft_approved": result.is_draft_approved,
@@ -600,7 +600,7 @@ def fact_checker_node(state: GraphState) -> Dict[str, Any]:
                 f"Draft under review:\n{draft}\n\nVerification result:"
             )},
         ]
-        batch_result = structured_call(batch_msgs, FactCheckResult, role="judge", temperature=0.1)
+        batch_result = structured_call(batch_msgs, FactCheckResult, role="judge", temperature=0.0)
         if not batch_result.is_draft_approved:
             all_approved = False
             all_feedback.append(batch_result.feedback)
@@ -803,7 +803,7 @@ def final_fact_checker_node(state: GraphState) -> Dict[str, Any]:
                 "draft_feedback": f"[Budget exceeded auto-approve] Full comparison not possible ({size/1024:.1f}KB)",
             }
         result = structured_call(messages, FactCheckResult, role="judge",
-                                temperature=0.1, stream=True)
+                                temperature=0.0, stream=True)
         plog("final_fact_checker", f"fallback-full approved={result.is_draft_approved} retry={retry_count}")
         return {
             "is_draft_approved": result.is_draft_approved,
@@ -834,7 +834,7 @@ def final_fact_checker_node(state: GraphState) -> Dict[str, Any]:
             continue
 
         result = structured_call(messages, FactCheckResult, role="judge",
-                                temperature=0.1, stream=True)
+                                temperature=0.0, stream=True)
         if not result.is_draft_approved:
             all_approved = False
             feedback_parts.append(f"Section {i + 1}: {result.feedback}")
@@ -1016,7 +1016,7 @@ def translate_node(state: GraphState) -> Dict[str, Any]:
         if full_size <= BUDGET_BYTES:
             result = structured_call(
                 full_msgs, PolishedDocument, role="writer",
-                temperature=0.1, stream=True,
+                temperature=0.2, stream=True,
             )
             rendered_parts.append(result.content)
             plog("translate", f"year={year} full-render, len={len(result.content)}")
@@ -1039,7 +1039,7 @@ def translate_node(state: GraphState) -> Dict[str, Any]:
                 if sec_size <= BUDGET_BYTES:
                     sec_result = structured_call(
                         sec_msgs, PolishedDocument, role="writer",
-                        temperature=0.1, stream=True,
+                        temperature=0.2, stream=True,
                     )
                     year_rendered.append(sec_result.content)
                 else:
@@ -1152,7 +1152,7 @@ def translation_checker_node(state: GraphState) -> Dict[str, Any]:
 
     if spot_size <= BUDGET_BYTES:
         result = structured_call(
-            spot_messages, TranslationCheckResult, role="judge", temperature=0.1,
+            spot_messages, TranslationCheckResult, role="judge", temperature=0.0,
         )
         if not result.is_approved:
             all_missing = list(set(missing + result.missing_terms))
