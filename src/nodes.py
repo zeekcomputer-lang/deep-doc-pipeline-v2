@@ -878,9 +878,10 @@ def _build_render_prompt(
         " - 마크다운 헤딩은 오직 ##와 ### 두 가지 수준만 사용합니다.\n"
         " - 월별 상세 내용은 소제목 분리 없이, 주제별로 문단(Paragraph)을 나누어 "
         "논리적인 서술형 텍스트로 전개합니다.\n\n"
-        "2. 밀도 있는 통합 서술 (Integrated Narrative)\n"
-        " - 제공된 초안의 모든 세부 정보와 배경 상황을 본문 텍스트에 온전히 풀어내어 "
-        "백서로서의 깊이를 확보합니다.\n"
+        "2. 밀도 있는 통합 서술 (Integrated Narrative) — 정보 누락 금지\n"
+        " - 제공된 초안의 모든 세부 정보, 배경 상황, 구체적 내역을 본문 텍스트에 빠짐없이 전부 포함합니다.\n"
+        " - 초안에 있는 문장/항목/수치를 요약하거나 생략하지 마십시오. "
+        "초안보다 짧아지면 안 됩니다.\n"
         " - 다수의 구체적인 실행 내역이나 팩트를 나열해야 할 경우, 도입 문장 뒤에 "
         "글머리 기호(-)를 연결하여 가독성 있게 정리합니다.\n\n"
         "3. 유동적 KPI의 인라인(Inline) 강조\n"
@@ -904,7 +905,9 @@ def _build_render_prompt(
         f"[보존 대상 고유명사 목록]\n{noun_ref}\n\n"
         "# Output Instruction\n"
         f"- 렌더링된 백서 본문은 ## {current_year}년 헤딩으로 시작합니다.\n"
-        "- 해당 연도의 마지막 데이터를 서술하는 문장으로 종료합니다."
+        "- 해당 연도의 마지막 데이터를 서술하는 문장으로 종료합니다.\n"
+        "- 영문 초안의 모든 정보가 한국어 본문에 반드시 포함되어야 합니다. "
+        "요약하거나 생략하지 마십시오."
         f"{retry_hint}"
     )
 
@@ -972,10 +975,14 @@ def translate_node(state: GraphState) -> Dict[str, Any]:
                 f"### {year}년 X월 헤딩으로 바로 시작합니다 "
                 f"(## {year}년 헤딩은 이미 삽입되어 있으므로 생략).",
             )
+            prev_section_summary = ""  # inter-section context
             for si, sec in enumerate(year_sections):
+                ctx_hint = ""
+                if prev_section_summary:
+                    ctx_hint = f"\n\n[이전 섹션 맥락] {prev_section_summary}\n"
                 sec_msgs = [
                     {"role": "system", "content": month_prompt},
-                    {"role": "user", "content": f"# Input Draft Text\n\n{sec}"},
+                    {"role": "user", "content": f"# Input Draft Text{ctx_hint}\n\n{sec}"},
                 ]
                 sec_size = measure_messages_bytes(sec_msgs) + guard_overhead
 
@@ -985,9 +992,12 @@ def translate_node(state: GraphState) -> Dict[str, Any]:
                         temperature=0.2, stream=True,
                     )
                     year_rendered.append(sec_result.content)
+                    # Carry last ~300 chars as context for next section
+                    prev_section_summary = sec_result.content[-300:]
                 else:
                     # Paragraph-level fallback: keep original section
                     year_rendered.append(sec)
+                    prev_section_summary = sec[-300:]
                 plog("translate", f"year={year} section {si+1}/{len(year_sections)} done")
 
             rendered_parts.append("\n\n".join(year_rendered))
