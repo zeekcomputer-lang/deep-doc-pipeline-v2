@@ -1076,40 +1076,56 @@ def translation_checker_node(state: GraphState) -> Dict[str, Any]:
     """Verify rendered Korean whitepaper quality.
 
     Defense layers:
-      1. Pure Python: proper noun presence check.
-      2. Structural: year/month heading format validation (## YYYY년 / ### YYYY년 X월:).
+      1. Pure Python: proper noun presence check (reject if >50% missing).
+      2. Structural: year/month heading format validation.
       3. LLM spot-check: first year's content for semantic fidelity.
+
+    Every attempt is saved as a candidate for best-of-N fallback.
     """
     english = state["english_output"]
     korean = state["final_output"]
     proper_nouns = state.get("proper_nouns", [])
     retry = state.get("translation_retry_count", 0)
 
-    # --- Layer 1: Pure Python proper noun check ---
+    # --- Proper noun score (used by all layers + candidate tracking) ---
     missing = [n for n in proper_nouns if n not in korean]
-    missing_ratio = len(missing) / max(len(proper_nouns), 1)
+    total = max(len(proper_nouns), 1)
+    missing_ratio = len(missing) / total
+    kept_pct = (1 - missing_ratio) * 100
 
-    if missing_ratio > 0.3:
-        msg = f"Too many proper nouns missing ({len(missing)}/{len(proper_nouns)}): {missing[:15]}"
-        plog("translation_checker", f"REJECTED (proper nouns): {msg}")
+    # Save this attempt as a candidate regardless of outcome
+    candidate = {
+        "content": korean,
+        "missing_count": len(missing),
+        "total_nouns": len(proper_nouns),
+        "kept_pct": kept_pct,
+        "retry": retry,
+    }
+
+    # --- Layer 1: Proper noun check (reject if >50% missing) ---
+    if missing_ratio > 0.5:
+        msg = f"Too many proper nouns missing ({len(missing)}/{len(proper_nouns)}, kept {kept_pct:.0f}%): {missing[:10]}"
+        plog("translation_checker", f"REJECTED (proper nouns, {kept_pct:.0f}% kept): {len(missing)}/{len(proper_nouns)} missing")
         return {
             "is_translation_approved": False,
             "translation_feedback": msg,
+            "translation_candidates": [candidate],
         }
 
-    # --- Layer 2: Structural validation (## year / ### month headings) ---
+    # --- Layer 2: Structural validation ---
     expected_count = count_expected_periods(english)
     struct_ok, struct_msg = validate_korean_structure(korean, expected_count)
 
     if not struct_ok:
-        plog("translation_checker", f"REJECTED (structure): {struct_msg}")
+        plog("translation_checker", f"REJECTED (structure, {kept_pct:.0f}% nouns kept): {struct_msg}")
         return {
             "is_translation_approved": False,
             "translation_feedback": struct_msg,
+            "translation_candidates": [candidate],
         }
-    plog("translation_checker", f"structure check: {struct_msg}")
+    psub("translation_checker", f"structure: {struct_msg}")
 
-    # --- Layer 3: LLM spot-check on first ~2000 chars ---
+    # --- Layer 3: LLM spot-check ---
     en_sample = english[:2000]
     kr_sample = korean[:2000]
 
@@ -1141,32 +1157,29 @@ def translation_checker_node(state: GraphState) -> Dict[str, Any]:
         if not result.is_approved:
             all_missing = list(set(missing + result.missing_terms))
             msg = f"LLM spot-check failed: {result.feedback}. Missing: {all_missing[:10]}"
-            plog("translation_checker", f"REJECTED (LLM): {msg}")
+            plog("translation_checker", f"REJECTED (LLM, {kept_pct:.0f}% nouns kept)")
             return {
                 "is_translation_approved": False,
                 "translation_feedback": msg,
+                "translation_candidates": [candidate],
             }
-        plog("translation_checker", f"LLM spot-check passed: {result.feedback[:60]}")
+        psub("translation_checker", f"LLM spot-check passed: {result.feedback[:60]}")
     else:
         psub("translation_checker", "LLM spot-check skipped (budget exceeded)")
 
     # All checks passed
-    if missing:
-        plog("translation_checker", f"minor missing nouns (accepted): {missing[:5]}")
-    plog("translation_checker", f"APPROVED retry={retry}")
+    plog("translation_checker", f"APPROVED retry={retry} (nouns kept {kept_pct:.0f}%)")
     return {
         "is_translation_approved": True,
-        "translation_feedback": "Rendering approved" + (
-            f" (minor missing: {missing})" if missing else ""
-        ),
+        "translation_feedback": f"Rendering approved (nouns kept {kept_pct:.0f}%)",
     }
 
 
 def route_translation(state: GraphState) -> str:
-    """Translation verification routing."""
+    """Translation verification routing. Up to 30 retries before fallback."""
     if state.get("is_translation_approved"):
         return "END"
-    if state.get("translation_retry_count", 0) >= 2:
+    if state.get("translation_retry_count", 0) >= 30:
         return "fallback_english"
     return "retry_translate"
 
@@ -1174,17 +1187,49 @@ def route_translation(state: GraphState) -> str:
 def retry_translate_node(state: GraphState) -> Dict[str, Any]:
     """Increment retry counter for translation re-attempt."""
     retry = state.get("translation_retry_count", 0) + 1
-    plog("retry_translate", f"retrying rendering (attempt {retry})")
+    plog("retry_translate", f"retrying rendering (attempt {retry}/30)")
     return {"translation_retry_count": retry}
 
 
 def fallback_english_node(state: GraphState) -> Dict[str, Any]:
-    """Rendering verification failed — keep English version with warning header."""
+    """All retries exhausted — return the top 3 best candidates by proper noun retention.
+
+    If no candidates exist, falls back to English original.
+    """
     english = state["english_output"]
-    warned = (
-        "> ⚠️ **Translation Notice** — English-to-Korean rendering could not be verified "
-        "after multiple attempts. English original is preserved below.\n\n"
-        + english
+    candidates = state.get("translation_candidates", [])
+    total_attempts = state.get("translation_retry_count", 0) + 1
+
+    if not candidates:
+        plog("fallback_english", "No candidates collected — keeping English output")
+        return {
+            "final_output": (
+                "> ⚠️ **렌더링 실패** — 한국어 변환 후보 없음. 영문 원본 보존.\n\n"
+                + english
+            )
+        }
+
+    # Sort by missing_count ascending (best = least missing nouns)
+    ranked = sorted(candidates, key=lambda c: c["missing_count"])
+    top3 = ranked[:3]
+
+    plog("fallback_english",
+         f"{total_attempts}회 시도 후 기준 미달 — 상위 {len(top3)}건 반환 "
+         f"(best {top3[0]['kept_pct']:.0f}% kept)")
+
+    parts: List[str] = []
+    parts.append(
+        f"> ⚠️ **렌더링 공지** — {total_attempts}회 시도 후 고유명사 기준 미달. "
+        f"상위 {len(top3)}건을 아래 제시합니다.\n"
     )
-    plog("fallback_english", "Rendering verification failed — keeping English output")
-    return {"final_output": warned}
+
+    for i, c in enumerate(top3, 1):
+        parts.append(
+            f"\n---\n\n"
+            f"## 후보 {i} (고유명사 유지율: {c['kept_pct']:.0f}%, "
+            f"누락 {c['missing_count']}/{c['total_nouns']}, "
+            f"attempt #{c['retry']})\n\n"
+            f"{c['content']}"
+        )
+
+    return {"final_output": "\n".join(parts)}

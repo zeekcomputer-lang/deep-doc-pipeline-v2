@@ -46,8 +46,9 @@ class GraphState(TypedDict, total=False):
     polish_retry_count: int
 
     # [7. Translation (English → Korean)]
-    english_output: str                             # v1.3: English whitepaper before translation
-    proper_nouns: List[str]                         # v1.3: extracted proper nouns for preservation
+    english_output: str
+    proper_nouns: List[str]
     translation_retry_count: int
     is_translation_approved: bool
     translation_feedback: str
+    translation_candidates: Annotated[List[Dict], operator.add]  # best-of-N tracking
