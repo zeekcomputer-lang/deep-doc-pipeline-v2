@@ -15,7 +15,7 @@ from .schemas import (
     SectionDraft, FactCheckResult, PolishedDocument,
     TranslationCheckResult,
 )
-from .llm import structured_call
+from .llm import structured_call, Timeout504Error, effective_budget, _504_MAX_STEPS
 from .utils import (
     is_valid_date, chrono_sort_and_group, filter_by_period,
     validate_outline_periods, compile_sections, format_events_for_prompt,
@@ -26,13 +26,39 @@ from .utils import (
 )
 from .logger import plog, psub
 from .context_guard import (
-    BUDGET_BYTES, estimate_guard_overhead, available_data_budget,
+    estimate_guard_overhead, available_data_budget,
     split_items_for_budget, trim_retry_context, cross_check_terms,
     measure_messages_bytes,
 )
+import functools
 
 
 LOCAL_DATA_PATH = "./data/records.jsonl"
+
+# ══════════════════════════════════════════════════════════════
+# 504 retry decorator: re-runs the entire node with reduced budget
+# ══════════════════════════════════════════════════════════════
+
+def retry_on_504(fn):
+    """Decorator: on Timeout504Error, re-run the entire node function.
+
+    The 504 handler in structured_call already reduced the global budget
+    before raising. Re-running the node causes its splitting logic to
+    regenerate smaller messages using effective_budget().
+    No user message content is ever truncated.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        for attempt in range(_504_MAX_STEPS):
+            try:
+                return fn(*args, **kwargs)
+            except Timeout504Error:
+                psub("504_retry",
+                     f"{fn.__name__} — node re-run ({attempt + 1}/{_504_MAX_STEPS}), "
+                     f"budget now {effective_budget() // 1024}KB")
+        return fn(*args, **kwargs)  # final attempt, let exception propagate
+    return wrapper
+
 
 # ══════════════════════════════════════════════════════════════
 # Common English enforcement suffix appended to key system prompts
@@ -74,6 +100,7 @@ def fanout_to_extractor(state: GraphState):
     ]
 
 
+@retry_on_504
 def strict_extractor_node(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extract ExtractedEvent from a single document.
@@ -104,8 +131,8 @@ def strict_extractor_node(payload: Dict[str, Any]) -> Dict[str, Any]:
     guard_overhead = estimate_guard_overhead(ExtractedEvent.model_json_schema())
     size = measure_messages_bytes(messages) + guard_overhead
 
-    if size > BUDGET_BYTES:
-        excess = size - BUDGET_BYTES + 512
+    if size > effective_budget():
+        excess = size - effective_budget() + 512
         doc_bytes = doc_text.encode("utf-8")
         allowed = max(len(doc_bytes) - excess, 256)
         doc_text = doc_bytes[:allowed].decode("utf-8", errors="ignore") + " [TRUNCATED]"
@@ -141,6 +168,7 @@ def fanout_to_period_summarizer(state: GraphState):
     ]
 
 
+@retry_on_504
 def period_summarizer_node(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Monthly key trend summary in exactly 3 sentences.
     v1.2: Budget-aware batch splitting + sub-summary merging.
@@ -167,7 +195,7 @@ def period_summarizer_node(payload: Dict[str, Any]) -> Dict[str, Any]:
     guard_overhead = estimate_guard_overhead(PeriodSummary.model_json_schema())
     size = measure_messages_bytes(messages) + guard_overhead
 
-    if size <= BUDGET_BYTES:
+    if size <= effective_budget():
         result = structured_call(messages, PeriodSummary, role="default", temperature=0.2)
         plog("period_summarizer", f"{period}: {result.summary[:60]}...")
         return {"period_summaries": {period: result.summary}}
@@ -207,6 +235,7 @@ def period_summarizer_node(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"period_summaries": {period: merged.summary}}
 
 
+@retry_on_504
 def theme_analyzer_node(state: GraphState) -> Dict[str, Any]:
     """Derive overall theme in 1 paragraph.
     v1.2: Drops oldest monthly summaries if budget exceeded.
@@ -237,7 +266,7 @@ def theme_analyzer_node(state: GraphState) -> Dict[str, Any]:
     guard_overhead = estimate_guard_overhead(GlobalTheme.model_json_schema())
     size = measure_messages_bytes(messages) + guard_overhead
 
-    while size > BUDGET_BYTES and len(active_periods) > 1:
+    while size > effective_budget() and len(active_periods) > 1:
         removed = active_periods.pop(0)
         plog("theme_analyzer", f"budget exceeded — removing oldest period: {removed}")
         joined = _make_joined(active_periods)
@@ -252,6 +281,7 @@ def theme_analyzer_node(state: GraphState) -> Dict[str, Any]:
 # ──────────────────────────────────────────────────────────────
 # Phase 4-B [Step 1]: Planning Validation Loop
 # ──────────────────────────────────────────────────────────────
+@retry_on_504
 def draft_planner_node(state: GraphState) -> Dict[str, Any]:
     """Plan whitepaper outline from global_theme + period_summaries.
     v1.2: Truncates summaries if budget exceeded.
@@ -291,7 +321,7 @@ def draft_planner_node(state: GraphState) -> Dict[str, Any]:
     guard_overhead = estimate_guard_overhead(Outline.model_json_schema())
     size = measure_messages_bytes(messages) + guard_overhead
 
-    if size > BUDGET_BYTES:
+    if size > effective_budget():
         truncated_joined = "\n".join(
             f"[{k}] {v[:100]}..." for k, v in sorted(summaries.items())
         )
@@ -305,6 +335,7 @@ def draft_planner_node(state: GraphState) -> Dict[str, Any]:
     return {"outline": items}
 
 
+@retry_on_504
 def planner_critique_node(state: GraphState) -> Dict[str, Any]:
     """
     Outline review: chronological flow + target_period existence validation.
@@ -362,7 +393,7 @@ def planner_critique_node(state: GraphState) -> Dict[str, Any]:
     guard_overhead = estimate_guard_overhead(OutlineCritique.model_json_schema())
     size = measure_messages_bytes(messages) + guard_overhead
 
-    if size > BUDGET_BYTES:
+    if size > effective_budget():
         truncated = [
             {**it, "intent": it["intent"][:80] + "..." if len(it["intent"]) > 80 else it["intent"]}
             for it in outline
@@ -408,6 +439,7 @@ def init_writing_node(state: GraphState) -> Dict[str, Any]:
     }
 
 
+@retry_on_504
 def section_writer_node(state: GraphState) -> Dict[str, Any]:
     """
     v1.2: Injects previous_draft + hallucinated_tokens on rewrite.
@@ -462,7 +494,7 @@ def section_writer_node(state: GraphState) -> Dict[str, Any]:
     guard_overhead = estimate_guard_overhead(SectionDraft.model_json_schema())
     size = measure_messages_bytes(messages) + guard_overhead
 
-    if size <= BUDGET_BYTES:
+    if size <= effective_budget():
         result = structured_call(messages, SectionDraft, role="writer", temperature=0.3)
         plog("section_writer", f"idx={idx} period={period} retry={retry} len={len(result.content)}")
         return {"current_draft": result.content}
@@ -515,7 +547,7 @@ def section_writer_node(state: GraphState) -> Dict[str, Any]:
     merge_guard = estimate_guard_overhead(SectionDraft.model_json_schema())
     merge_size = measure_messages_bytes(merge_msgs) + merge_guard
 
-    if merge_size <= BUDGET_BYTES:
+    if merge_size <= effective_budget():
         merged = structured_call(merge_msgs, SectionDraft, role="writer", temperature=0.3)
         content = merged.content
     else:
@@ -526,6 +558,7 @@ def section_writer_node(state: GraphState) -> Dict[str, Any]:
     return {"current_draft": content}
 
 
+@retry_on_504
 def fact_checker_node(state: GraphState) -> Dict[str, Any]:
     """
     v1.2: Mandatory hallucinated_terms extraction.
@@ -562,7 +595,7 @@ def fact_checker_node(state: GraphState) -> Dict[str, Any]:
     guard_overhead = estimate_guard_overhead(FactCheckResult.model_json_schema())
     size = measure_messages_bytes(messages) + guard_overhead
 
-    if size <= BUDGET_BYTES:
+    if size <= effective_budget():
         result = structured_call(messages, FactCheckResult, role="judge", temperature=0.0)
         plog("fact_checker", f"idx={idx} approved={result.is_draft_approved} halluc={result.hallucinated_terms[:3]}")
         return {
@@ -694,6 +727,7 @@ def compiler_node(state: GraphState) -> Dict[str, Any]:
     return {"final_compiled": compiled, "polish_retry_count": 0}
 
 
+@retry_on_504
 def polish_node(state: GraphState) -> Dict[str, Any]:
     """Section-by-section polishing + streaming. Prevents 504 on large contexts.
     v1.2: Paragraph-level splitting if section exceeds budget.
@@ -730,7 +764,7 @@ def polish_node(state: GraphState) -> Dict[str, Any]:
         ]
         size = measure_messages_bytes(messages) + guard_overhead
 
-        if size <= BUDGET_BYTES:
+        if size <= effective_budget():
             result = structured_call(
                 messages, PolishedDocument, role="writer",
                 temperature=0.1, stream=True,
@@ -750,7 +784,7 @@ def polish_node(state: GraphState) -> Dict[str, Any]:
                     {"role": "user", "content": f"Body text:\n{para}\n\nPolished result:"},
                 ]
                 para_size = measure_messages_bytes(para_msgs) + guard_overhead
-                if para_size <= BUDGET_BYTES:
+                if para_size <= effective_budget():
                     para_result = structured_call(
                         para_msgs, PolishedDocument, role="writer",
                         temperature=0.1, stream=True,
@@ -767,6 +801,7 @@ def polish_node(state: GraphState) -> Dict[str, Any]:
     return {"final_output": final}
 
 
+@retry_on_504
 def final_fact_checker_node(state: GraphState) -> Dict[str, Any]:
     """Section-by-section 2nd fact-check + streaming. Prevents 504 on large contexts.
     v1.2: Skips section pairs exceeding budget (auto-approve).
@@ -796,7 +831,7 @@ def final_fact_checker_node(state: GraphState) -> Dict[str, Any]:
             )},
         ]
         size = measure_messages_bytes(messages) + guard_overhead
-        if size > BUDGET_BYTES:
+        if size > effective_budget():
             plog("final_fact_checker", f"fallback-full budget exceeded ({size/1024:.1f}KB) — auto-approve")
             return {
                 "is_draft_approved": True,
@@ -829,7 +864,7 @@ def final_fact_checker_node(state: GraphState) -> Dict[str, Any]:
         ]
         size = measure_messages_bytes(messages) + guard_overhead
 
-        if size > BUDGET_BYTES:
+        if size > effective_budget():
             plog("final_fact_checker", f"section {i + 1} budget exceeded ({size/1024:.1f}KB) — skipped")
             continue
 
@@ -966,6 +1001,7 @@ def _build_render_prompt(
     )
 
 
+@retry_on_504
 def translate_node(state: GraphState) -> Dict[str, Any]:
     """Render English whitepaper into styled Korean whitepaper.
 
@@ -1013,7 +1049,7 @@ def translate_node(state: GraphState) -> Dict[str, Any]:
         ]
         full_size = measure_messages_bytes(full_msgs) + guard_overhead
 
-        if full_size <= BUDGET_BYTES:
+        if full_size <= effective_budget():
             result = structured_call(
                 full_msgs, PolishedDocument, role="writer",
                 temperature=0.2, stream=True,
@@ -1036,7 +1072,7 @@ def translate_node(state: GraphState) -> Dict[str, Any]:
                 ]
                 sec_size = measure_messages_bytes(sec_msgs) + guard_overhead
 
-                if sec_size <= BUDGET_BYTES:
+                if sec_size <= effective_budget():
                     sec_result = structured_call(
                         sec_msgs, PolishedDocument, role="writer",
                         temperature=0.2, stream=True,
@@ -1072,6 +1108,7 @@ def translate_node(state: GraphState) -> Dict[str, Any]:
     return {"final_output": final}
 
 
+@retry_on_504
 def translation_checker_node(state: GraphState) -> Dict[str, Any]:
     """Verify rendered Korean whitepaper quality.
 
@@ -1150,7 +1187,7 @@ def translation_checker_node(state: GraphState) -> Dict[str, Any]:
     guard_overhead = estimate_guard_overhead(TranslationCheckResult.model_json_schema())
     spot_size = measure_messages_bytes(spot_messages) + guard_overhead
 
-    if spot_size <= BUDGET_BYTES:
+    if spot_size <= effective_budget():
         result = structured_call(
             spot_messages, TranslationCheckResult, role="judge", temperature=0.0,
         )

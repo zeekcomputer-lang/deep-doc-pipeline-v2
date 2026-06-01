@@ -287,21 +287,13 @@ def effective_max_tokens(base: int = MAX_COMPLETION_TOKENS) -> int:
     return max(base - _504_token_offset, _504_MIN_TOKENS)
 
 
-def _trim_longest_user_msg(messages: list, reduce_bytes: int) -> None:
-    """Truncate the longest user message content by reduce_bytes."""
-    max_idx, max_len = -1, 0
-    for i, m in enumerate(messages):
-        if m["role"] == "user":
-            blen = len(m["content"].encode("utf-8"))
-            if blen > max_len:
-                max_len = blen
-                max_idx = i
-    if max_idx >= 0 and max_len > reduce_bytes + 256:
-        raw = messages[max_idx]["content"].encode("utf-8")
-        cut = max(len(raw) - reduce_bytes, 256)
-        messages[max_idx]["content"] = (
-            raw[:cut].decode("utf-8", errors="ignore") + "\n[TRUNCATED]"
-        )
+class Timeout504Error(Exception):
+    """Raised on 504 after global budget reduction.
+
+    Callers should re-run the entire node so that splitting logic
+    regenerates smaller messages using the reduced effective_budget().
+    """
+    pass
 
 
 def structured_call(
@@ -347,7 +339,6 @@ def structured_call(
     last_err: Optional[Exception] = None
     last_raw: str = ""
     json_attempts: int = 0
-    _504_attempts: int = 0
 
     while True:
         # Current effective limits (may have been reduced by prior 504s)
@@ -358,7 +349,7 @@ def structured_call(
             # ── Budget hard limit ──
             payload_bytes = measure_messages_bytes(work_messages)
             if payload_bytes > eff_budget:
-                # Remove oldest retry pairs first
+                # Remove oldest retry pairs (from JSON retries) first
                 while len(work_messages) > 3 and payload_bytes > eff_budget:
                     if (
                         len(work_messages) >= 5
@@ -368,14 +359,9 @@ def structured_call(
                         payload_bytes = measure_messages_bytes(work_messages)
                     else:
                         break
-                # Still over: truncate longest user message
-                if payload_bytes > eff_budget:
-                    excess = payload_bytes - eff_budget + 512
-                    _trim_longest_user_msg(work_messages, excess)
-                    payload_bytes = measure_messages_bytes(work_messages)
                 if payload_bytes > eff_budget:
                     raise ContextBudgetExceeded(payload_bytes, eff_budget)
-                psub("structured_call", f"trimmed to {payload_bytes/1024:.1f}KB (budget {eff_budget//1024}KB)")
+                psub("structured_call", f"trimmed retry pairs to {payload_bytes/1024:.1f}KB (budget {eff_budget//1024}KB)")
 
             with _rate_limiter:
                 if stream:
@@ -408,18 +394,18 @@ def structured_call(
             return response_model.model_validate(parsed_dict)
 
         except Exception as e:
-            # ── 504 Timeout: reduce by 5KB and retry ──
-            if _is_504(e) and _504_attempts < _504_MAX_STEPS:
-                _504_attempts += 1
+            # ── 504 Timeout: reduce globally and raise for node-level retry ──
+            if _is_504(e):
                 _reduce_504()
                 new_budget = effective_budget()
                 new_tokens = effective_max_tokens(max_tokens)
                 psub("structured_call",
-                     f"504 → 5KB 감축 ({_504_attempts}/{_504_MAX_STEPS}): "
-                     f"budget {new_budget//1024}KB, tokens {new_tokens}")
-                # Trim input to fit new budget
-                _trim_longest_user_msg(work_messages, _504_REDUCE_BYTES)
-                continue
+                     f"504 → 5KB 감축: budget {new_budget//1024}KB, "
+                     f"tokens {new_tokens} (offset {_504_budget_offset//1024}KB)")
+                raise Timeout504Error(
+                    f"504 after reduction: budget={new_budget//1024}KB, "
+                    f"tokens={new_tokens}"
+                )
 
             # ── JSON parse failure: standard retry ──
             if not _is_504(e) and json_attempts < max_retries:
@@ -447,6 +433,6 @@ def structured_call(
 
     raise RuntimeError(
         f"structured_call failed (json_retries={json_attempts}, "
-        f"504_retries={_504_attempts}, budget={effective_budget()//1024}KB, "
+        f"budget={effective_budget()//1024}KB, "
         f"tokens={effective_max_tokens(max_tokens)}): {last_err}"
     )
