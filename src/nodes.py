@@ -3,6 +3,7 @@ LangGraph node functions. One Node = One Task principle strictly enforced.
 """
 from __future__ import annotations
 import json
+import re
 from pathlib import Path
 from typing import Dict, List, Any
 
@@ -913,31 +914,57 @@ def _build_render_prompt(
 
 
 @retry_on_504
+@retry_on_504
 def translate_node(state: GraphState) -> Dict[str, Any]:
     """Render English whitepaper into styled Korean whitepaper.
 
-    Applies the senior editor style guide:
-      - Year/month heading structure (## YYYY년 / ### YYYY년 X월: [요약])
-      - Dense integrated narrative with inline KPI emphasis
-      - Formal objective tone (~다, ~함, ~구축됨)
-      - Fact-only constraint + proper noun preservation
-
-    Multi-year data is rendered year by year with previous_context accumulation
-    to maintain narrative continuity across year boundaries.
+    Strategy:
+      - If english_output <= 90KB: full-document rendering in one LLM call
+        (zero context loss, maximum quality).
+      - If > 90KB: month-by-month rendering using period_summaries and
+        global_theme from earlier pipeline stages as context.
     """
     english = state["english_output"]
     proper_nouns = state.get("proper_nouns", [])
 
+    english_bytes = len(english.encode("utf-8"))
+    FULL_RENDER_LIMIT = 90 * 1024  # 90KB
 
-    # Extract structure from English content
     doc_header, sections, audit = split_compiled_by_section(english)
     years = extract_years_from_content(english)
-
     if not years:
-        years = ["2026"]  # safe fallback
+        years = ["2026"]
 
     guard_overhead = estimate_guard_overhead(PolishedDocument.model_json_schema())
-    retry_feedback = ""
+
+    # ── Path A: Full-document rendering (≤90KB) ──────────────────
+    if english_bytes <= FULL_RENDER_LIMIT:
+        system_prompt = _build_render_prompt(
+            years[0] if len(years) == 1 else f"{years[0]}~{years[-1]}",
+            "", proper_nouns,
+        )
+        full_msgs = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"# Input Draft Text\n\n{english}"},
+        ]
+        result = structured_call(
+            full_msgs, PolishedDocument, role="writer",
+            temperature=0.2, stream=True,
+        )
+        plog("translate", f"full-document render ({english_bytes/1024:.0f}KB), len={len(result.content)}")
+
+        final = result.content
+        if audit:
+            final += "\n" + audit.replace("### Audit Log", "### 감사 로그").replace(
+                "Unverified section indices:", "검증 미완료 섹션 인덱스:")
+        return {"final_output": final}
+
+    # ── Path B: Month-by-month rendering (>90KB) ─────────────────
+    plog("translate", f"english {english_bytes/1024:.0f}KB > 90KB — month-by-month rendering")
+
+    # Retrieve earlier-stage context for richer month rendering
+    period_summaries = state.get("period_summaries", {})
+    global_theme = state.get("global_theme", "")
 
     rendered_parts: List[str] = []
     previous_context = ""
@@ -947,68 +974,61 @@ def translate_node(state: GraphState) -> Dict[str, Any]:
         if not year_sections:
             continue
 
-        year_text = "\n".join(year_sections)
-        system_prompt = _build_render_prompt(
-            year, previous_context, proper_nouns, retry_feedback,
-        )
+        year_rendered: List[str] = [f"## {year}년\n"]
 
-        # --- Attempt 1: Full-year rendering ---
-        full_msgs = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"# Input Draft Text\n\n{year_text}"},
-        ]
-        full_size = measure_messages_bytes(full_msgs) + guard_overhead
+        for si, sec in enumerate(year_sections):
+            # Extract this section's target period for summary lookup
+            period_match = re.search(r'_Target period:\s*(\d{4}-\d{2})_', sec)
+            target_period = period_match.group(1) if period_match else ""
 
-        if full_size <= effective_budget():
-            result = structured_call(
-                full_msgs, PolishedDocument, role="writer",
-                temperature=0.2, stream=True,
+            # Build month-level context from pipeline state
+            month_summary = period_summaries.get(target_period, "")
+            context_block = ""
+            if global_theme or month_summary or previous_context:
+                parts = []
+                if global_theme and si == 0:
+                    parts.append(f"[전체 흐름] {global_theme}")
+                if month_summary:
+                    parts.append(f"[{target_period} 요약] {month_summary}")
+                if previous_context:
+                    parts.append(f"[이전 섹션 맥락] {previous_context}")
+                context_block = "\n\n" + "\n".join(parts) + "\n"
+
+            month_prompt = _build_render_prompt(
+                year, previous_context, proper_nouns,
             )
-            rendered_parts.append(result.content)
-            plog("translate", f"year={year} full-render, len={len(result.content)}")
-        else:
-            # --- Attempt 2: Section-by-section within year ---
-            year_rendered: List[str] = [f"## {year}년\n"]
-            # Adjust prompt: skip ## year heading since it's manually prepended
-            month_prompt = system_prompt.replace(
+            # Override heading instruction for month-level
+            month_prompt = month_prompt.replace(
                 f"렌더링된 백서 본문은 ## {year}년 헤딩으로 시작합니다.",
                 f"### {year}년 X월 헤딩으로 바로 시작합니다 "
                 f"(## {year}년 헤딩은 이미 삽입되어 있으므로 생략).",
             )
-            prev_section_summary = ""  # inter-section context
-            for si, sec in enumerate(year_sections):
-                ctx_hint = ""
-                if prev_section_summary:
-                    ctx_hint = f"\n\n[이전 섹션 맥락] {prev_section_summary}\n"
-                sec_msgs = [
-                    {"role": "system", "content": month_prompt},
-                    {"role": "user", "content": f"# Input Draft Text{ctx_hint}\n\n{sec}"},
-                ]
-                sec_size = measure_messages_bytes(sec_msgs) + guard_overhead
 
-                if sec_size <= effective_budget():
-                    sec_result = structured_call(
-                        sec_msgs, PolishedDocument, role="writer",
-                        temperature=0.2, stream=True,
-                    )
-                    year_rendered.append(sec_result.content)
-                    # Carry last ~300 chars as context for next section
-                    prev_section_summary = sec_result.content[-300:]
-                else:
-                    # Paragraph-level fallback: keep original section
-                    year_rendered.append(sec)
-                    prev_section_summary = sec[-300:]
-                plog("translate", f"year={year} section {si+1}/{len(year_sections)} done")
+            sec_msgs = [
+                {"role": "system", "content": month_prompt},
+                {"role": "user", "content": f"# Input Draft Text{context_block}\n\n{sec}"},
+            ]
+            sec_size = measure_messages_bytes(sec_msgs) + guard_overhead
 
-            rendered_parts.append("\n\n".join(year_rendered))
-            plog("translate", f"year={year} section-by-section render")
+            if sec_size <= effective_budget():
+                sec_result = structured_call(
+                    sec_msgs, PolishedDocument, role="writer",
+                    temperature=0.2, stream=True,
+                )
+                year_rendered.append(sec_result.content)
+                previous_context = sec_result.content[-300:]
+            else:
+                # Budget exceeded even for single section — keep English
+                year_rendered.append(sec)
+                previous_context = sec[-300:]
 
-        # Accumulate previous_context for narrative continuity across years
-        if rendered_parts:
-            last = rendered_parts[-1]
-            previous_context = last[-500:] if len(last) > 500 else last
+            plog("translate",
+                 f"year={year} month={target_period} "
+                 f"({si+1}/{len(year_sections)}) done")
 
-    # Deterministic audit log translation (no LLM needed)
+        rendered_parts.append("\n\n".join(year_rendered))
+
+    # Audit log (deterministic)
     kr_audit = ""
     if audit:
         kr_audit = (
@@ -1021,7 +1041,5 @@ def translate_node(state: GraphState) -> Dict[str, Any]:
     if kr_audit:
         final += "\n" + kr_audit
 
-    plog("translate", f"done: years={years} len={len(final)}")
+    plog("translate", f"month-by-month done: years={years} len={len(final)}")
     return {"final_output": final}
-
-
