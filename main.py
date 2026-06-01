@@ -26,6 +26,7 @@ except ImportError:
 from src.graph import build_graph
 from src.nodes import LOCAL_DATA_PATH
 from src.logger import reset_stats, summary
+from src.llm import reset_504_state
 
 
 def parse_args():
@@ -50,8 +51,9 @@ def main():
           f"{os.getenv('OPENAI_BASE_URL', 'http://localhost:11434/v1')}")
     print("=" * 70)
 
-    # 타이머 + 카운터 시작
+    # 타이머 + 카운터 + 504 상태 초기화
     reset_stats()
+    reset_504_state()
 
     graph = build_graph()
 

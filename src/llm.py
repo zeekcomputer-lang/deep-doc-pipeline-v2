@@ -16,7 +16,7 @@ import time
 from collections import deque
 from typing import Any, Dict, Optional, Type, TypeVar
 
-from openai import OpenAI
+from openai import OpenAI, APITimeoutError, APIStatusError
 from pydantic import BaseModel
 
 from .context_guard import (
@@ -234,8 +234,74 @@ def extract_json(text: str, *, expect: str = "object") -> Any:
 # ──────────────────────────────────────────────────────────────────────────────
 # structured_call — Pydantic 강제 + GPT-OSS 호환 JSON 강제 + Rate Limiting
 # ──────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Output token limit + 504 adaptive reduction
+# ──────────────────────────────────────────────────────────────────────────────
 # 95KB = 97,280 bytes. At ~4 bytes/token (English), 24,000 tokens ≈ 93.8KB.
 MAX_COMPLETION_TOKENS: int = 24_000
+
+# 504 reduction: 5KB per step (≈ 1,280 tokens at 4 bytes/token)
+_504_REDUCE_BYTES: int = 5 * 1024
+_504_REDUCE_TOKENS: int = 1_280
+_504_MAX_STEPS: int = 10           # max 50KB total reduction
+_504_MIN_BUDGET: int = 10 * 1024   # never go below 10KB
+_504_MIN_TOKENS: int = 1_024       # never go below 1,024 tokens
+
+# Persistent offsets — reduced on 504, persist across calls within a pipeline run.
+# This implements "previous step regression": once budget is reduced,
+# ALL subsequent LLM calls in the pipeline use the reduced limits.
+_504_token_offset: int = 0
+_504_budget_offset: int = 0
+
+
+def reset_504_state() -> None:
+    """Reset 504 reduction offsets. Call once at pipeline start."""
+    global _504_token_offset, _504_budget_offset
+    _504_token_offset = 0
+    _504_budget_offset = 0
+
+
+def _is_504(e: Exception) -> bool:
+    """Detect 504 Gateway Timeout or request timeout."""
+    if isinstance(e, APITimeoutError):
+        return True
+    if isinstance(e, APIStatusError) and e.status_code == 504:
+        return True
+    return False
+
+
+def _reduce_504() -> None:
+    """Globally reduce budget + tokens by 5KB. Persists for all subsequent calls."""
+    global _504_token_offset, _504_budget_offset
+    _504_token_offset += _504_REDUCE_TOKENS
+    _504_budget_offset += _504_REDUCE_BYTES
+
+
+def effective_budget() -> int:
+    """Current effective input budget (BUDGET_BYTES minus 504 reductions)."""
+    return max(BUDGET_BYTES - _504_budget_offset, _504_MIN_BUDGET)
+
+
+def effective_max_tokens(base: int = MAX_COMPLETION_TOKENS) -> int:
+    """Current effective output token limit (base minus 504 reductions)."""
+    return max(base - _504_token_offset, _504_MIN_TOKENS)
+
+
+def _trim_longest_user_msg(messages: list, reduce_bytes: int) -> None:
+    """Truncate the longest user message content by reduce_bytes."""
+    max_idx, max_len = -1, 0
+    for i, m in enumerate(messages):
+        if m["role"] == "user":
+            blen = len(m["content"].encode("utf-8"))
+            if blen > max_len:
+                max_len = blen
+                max_idx = i
+    if max_idx >= 0 and max_len > reduce_bytes + 256:
+        raw = messages[max_idx]["content"].encode("utf-8")
+        cut = max(len(raw) - reduce_bytes, 256)
+        messages[max_idx]["content"] = (
+            raw[:cut].decode("utf-8", errors="ignore") + "\n[TRUNCATED]"
+        )
 
 
 def structured_call(
@@ -248,33 +314,27 @@ def structured_call(
     reasoning_effort: str = "high",
     max_tokens: int = MAX_COMPLETION_TOKENS,
 ) -> T:
-    """GPT-OSS 호환 Pydantic 강제 LLM 호출.
+    """GPT-OSS compatible Pydantic-enforced LLM call with 504 adaptive reduction.
 
-    전략:
-      - response_format 인자를 사용하지 않음 (GPT-OSS 미지원).
-      - Pydantic JSON Schema + 출력 규약을 system 프롬프트에 첨부하여 JSON 응답 유도.
-      - 응답은 extract_json() 3단 파서로 추출 후 Pydantic model_validate.
-      - 파싱/검증 실패 시 직전 응답을 assistant 메시지로 넘겨 "JSON만 다시 출력" 재요청.
-      - 모든 API 호출은 _rate_limiter 를 통해 분당/동시 호출 수 제한.
-      - stream=True: SSE 스트리밍으로 첫 토큰 즉시 수신 → 게이트웨이 504 타임아웃 방지.
-      - 모든 호출 전 95KB 예산 하드리밋 적용 (retry 누적 시 자동 트리밍).
+    On 504 timeout:
+      1. Globally reduce input budget AND output tokens by 5KB.
+      2. Trim the longest user message to fit the new budget.
+      3. Retry (up to 10 additional 504-specific retries).
+      4. Reductions persist across ALL subsequent calls in the pipeline run
+         (\"previous step regression\").
     """
     model = get_model(role)
     schema = response_model.model_json_schema()
 
-    # 프롬프트 가드: JSON Schema 힌트 + 출력 규약
     json_guard = (
         "\n\n[OUTPUT PROTOCOL — MANDATORY]\n"
         "- Respond with exactly one JSON object only.\n"
         "- No code fences (```), explanations, preambles, postambles, or chain-of-thought.\n"
         "- The first character of your response MUST be '{'.\n"
         "- Use double quotes for all keys and strings. No trailing commas.\n"
-        # English enforcement is handled per-node via _EN_ENFORCE, not here.
-        # The translation/rendering stage outputs Korean, so this guard stays language-neutral.
         f"\n[JSON Schema — follow this structure exactly]\n{json.dumps(schema, ensure_ascii=False, indent=2)}\n"
     )
 
-    # 작업용 메시지 목록 (원본 변경 방지)
     work_messages = list(messages)
     if work_messages and work_messages[0]["role"] == "system":
         work_messages[0] = {
@@ -286,18 +346,20 @@ def structured_call(
 
     last_err: Optional[Exception] = None
     last_raw: str = ""
+    json_attempts: int = 0
+    _504_attempts: int = 0
 
-    for attempt in range(max_retries):
+    while True:
+        # Current effective limits (may have been reduced by prior 504s)
+        eff_budget = effective_budget()
+        eff_tokens = effective_max_tokens(max_tokens)
+
         try:
-            # ── 컨텍스트 예산 하드리밋 ──
+            # ── Budget hard limit ──
             payload_bytes = measure_messages_bytes(work_messages)
-            if payload_bytes > BUDGET_BYTES:
-                # Retry 누적으로 인한 초과: 가장 오래된 retry 쌍 제거
-                while (
-                    len(work_messages) > 3
-                    and payload_bytes > BUDGET_BYTES
-                ):
-                    # index 2,3 = 가장 오래된 (assistant, user) retry 쌍
+            if payload_bytes > eff_budget:
+                # Remove oldest retry pairs first
+                while len(work_messages) > 3 and payload_bytes > eff_budget:
                     if (
                         len(work_messages) >= 5
                         and work_messages[2]["role"] == "assistant"
@@ -306,19 +368,23 @@ def structured_call(
                         payload_bytes = measure_messages_bytes(work_messages)
                     else:
                         break
-                if payload_bytes > BUDGET_BYTES:
-                    raise ContextBudgetExceeded(payload_bytes, BUDGET_BYTES)
-                psub("structured_call", f"retry 컨텍스트 트리밍 후 {payload_bytes/1024:.1f}KB")
+                # Still over: truncate longest user message
+                if payload_bytes > eff_budget:
+                    excess = payload_bytes - eff_budget + 512
+                    _trim_longest_user_msg(work_messages, excess)
+                    payload_bytes = measure_messages_bytes(work_messages)
+                if payload_bytes > eff_budget:
+                    raise ContextBudgetExceeded(payload_bytes, eff_budget)
+                psub("structured_call", f"trimmed to {payload_bytes/1024:.1f}KB (budget {eff_budget//1024}KB)")
 
             with _rate_limiter:
                 if stream:
-                    # SSE 스트리밍: 첫 토큰이 도달하면 게이트웨이 read_timeout 리셋
                     response_stream = _client.chat.completions.create(
                         model=model,
                         messages=work_messages,
                         temperature=temperature,
                         reasoning_effort=reasoning_effort,
-                        max_tokens=max_tokens,
+                        max_tokens=eff_tokens,
                         stream=True,
                     )
                     _chunks: list = []
@@ -333,32 +399,54 @@ def structured_call(
                         messages=work_messages,
                         temperature=temperature,
                         reasoning_effort=reasoning_effort,
-                        max_tokens=max_tokens,
+                        max_tokens=eff_tokens,
                     )
                     last_raw = response.choices[0].message.content or ""
                     count_llm()
 
-            # extract_json → Pydantic 검증
             parsed_dict = extract_json(last_raw, expect="object")
             return response_model.model_validate(parsed_dict)
 
         except Exception as e:
+            # ── 504 Timeout: reduce by 5KB and retry ──
+            if _is_504(e) and _504_attempts < _504_MAX_STEPS:
+                _504_attempts += 1
+                _reduce_504()
+                new_budget = effective_budget()
+                new_tokens = effective_max_tokens(max_tokens)
+                psub("structured_call",
+                     f"504 → 5KB 감축 ({_504_attempts}/{_504_MAX_STEPS}): "
+                     f"budget {new_budget//1024}KB, tokens {new_tokens}")
+                # Trim input to fit new budget
+                _trim_longest_user_msg(work_messages, _504_REDUCE_BYTES)
+                continue
+
+            # ── JSON parse failure: standard retry ──
+            if not _is_504(e) and json_attempts < max_retries:
+                json_attempts += 1
+                last_err = e
+                psub("structured_call",
+                     f"retry {json_attempts}/{max_retries} — {type(e).__name__}: {e}")
+                work_messages.append({"role": "assistant", "content": last_raw})
+                work_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The previous response was not valid JSON or did not match the schema. "
+                            "Perform the same task again, outputting exactly one JSON object only. "
+                            "No code fences, explanations, or preambles. "
+                            f"Schema: {json.dumps(schema, ensure_ascii=False)}"
+                        ),
+                    }
+                )
+                continue
+
+            # ── All retries exhausted ──
             last_err = e
-            psub("structured_call", f"retry {attempt + 1}/{max_retries} — {type(e).__name__}: {e}")
-            # 재시도: 직전 응답을 보여주고 JSON-only 재요청
-            work_messages.append({"role": "assistant", "content": last_raw})
-            work_messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "The previous response was not valid JSON or did not match the schema. "
-                        "Perform the same task again, outputting exactly one JSON object only. "
-                        "No code fences, explanations, or preambles. "
-                        f"Schema: {json.dumps(schema, ensure_ascii=False)}"
-                    ),
-                }
-            )
+            break
 
     raise RuntimeError(
-        f"structured_call failed after {max_retries} attempts: {last_err}"
+        f"structured_call failed (json_retries={json_attempts}, "
+        f"504_retries={_504_attempts}, budget={effective_budget()//1024}KB, "
+        f"tokens={effective_max_tokens(max_tokens)}): {last_err}"
     )
