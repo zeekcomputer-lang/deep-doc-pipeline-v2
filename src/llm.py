@@ -234,6 +234,10 @@ def extract_json(text: str, *, expect: str = "object") -> Any:
 # ──────────────────────────────────────────────────────────────────────────────
 # structured_call — Pydantic 강제 + GPT-OSS 호환 JSON 강제 + Rate Limiting
 # ──────────────────────────────────────────────────────────────────────────────
+# 95KB = 97,280 bytes. At ~4 bytes/token (English), 24,000 tokens ≈ 93.8KB.
+MAX_COMPLETION_TOKENS: int = 24_000
+
+
 def structured_call(
     messages: list,
     response_model: Type[T],
@@ -242,6 +246,7 @@ def structured_call(
     max_retries: int = 3,
     stream: bool = False,
     reasoning_effort: str = "high",
+    max_tokens: int = MAX_COMPLETION_TOKENS,
 ) -> T:
     """GPT-OSS 호환 Pydantic 강제 LLM 호출.
 
@@ -313,6 +318,7 @@ def structured_call(
                         messages=work_messages,
                         temperature=temperature,
                         reasoning_effort=reasoning_effort,
+                        max_tokens=max_tokens,
                         stream=True,
                     )
                     _chunks: list = []
@@ -327,6 +333,7 @@ def structured_call(
                         messages=work_messages,
                         temperature=temperature,
                         reasoning_effort=reasoning_effort,
+                        max_tokens=max_tokens,
                     )
                     last_raw = response.choices[0].message.content or ""
                     count_llm()
