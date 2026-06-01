@@ -86,6 +86,11 @@ python -m main --output out.md   # 출력 경로 지정
 python -m main --output report.md
 # → report.md      한글 백서 (성공) 또는 상위 3건 후보 (실패)
 # → report_en.md   영문 원본 (항상 생성)
+
+# DOCX 변환 (개별 구동)
+python scripts/md_to_docx.py report.md                    # → report.docx
+python scripts/md_to_docx.py report.md -o whitepaper.docx  # 출력명 지정
+python scripts/md_to_docx.py report.md report_en.md        # 복수 파일 병합
 ```
 
 ## 핵심 방어 기제
