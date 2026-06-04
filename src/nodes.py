@@ -29,6 +29,10 @@ from .context_guard import (
     split_items_for_budget, trim_retry_context, cross_check_terms,
     measure_messages_bytes,
 )
+from .prompt_config import (
+    get_summary_context, get_planning_context,
+    get_writing_context, get_translation_context,
+)
 import functools
 
 
@@ -185,9 +189,11 @@ def period_summarizer_node(payload: Dict[str, Any]) -> Dict[str, Any]:
     period = payload["period"]
     events = payload["events"]
 
+    # ── 사용자 커스텀: prompt_config.py의 PURPOSE + TONE이 여기에 주입됩니다 ──
     system_content = (
         "You are a period trend analyst. Summarize the given event list into exactly "
         "3 sentences capturing the key trends. Do NOT add content not present in the events."
+        + get_summary_context()
         + _EN_ENFORCE
     )
     user_template = "Period: {period}\n\nEvent list:\n{events_text}\n\n3-sentence summary:"
@@ -253,10 +259,12 @@ def theme_analyzer_node(state: GraphState) -> Dict[str, Any]:
     summaries = state["period_summaries"]
     sorted_periods = sorted(summaries.keys())
 
+    # ── 사용자 커스텀: prompt_config.py의 PURPOSE + TONE이 여기에 주입됩니다 ──
     system_content = (
         "You are a macro analyst. Given monthly summaries, write exactly 1 paragraph "
         "capturing the overarching insight into the project's performance and risk trajectory. "
         "Do NOT add content not present in the summaries."
+        + get_summary_context()
         + _EN_ENFORCE
     )
 
@@ -308,12 +316,14 @@ def draft_planner_node(state: GraphState) -> Dict[str, Any]:
             f"\n\n[PREVIOUS OUTLINE REJECTED — address these issues]\n{prev_feedback}\n"
         )
 
+    # ── 사용자 커스텀: prompt_config.py의 PURPOSE + AUDIENCE가 여기에 주입됩니다 ──
     system_content = (
         "You are a whitepaper planner. Create an outline based on the given theme and "
         "monthly summaries. Each outline item must cover exactly one 'YYYY-MM' period "
         "(target_period). "
         f"Available period keys: {available_periods}\n"
         "Only use periods from this list. Sort in chronological order."
+        + get_planning_context()
         + _EN_ENFORCE
     )
 
@@ -480,10 +490,13 @@ def section_writer_node(state: GraphState) -> Dict[str, Any]:
             f"\n[REVISION INSTRUCTIONS]\n{feedback}\n"
         )
 
+    # ── 사용자 커스텀: prompt_config.py의 PURPOSE + TONE + AUDIENCE + CUSTOM이 주입됩니다 ──
+    # ── 편향 설정이 있어도 fact_checker가 원본 데이터 외 사실 추가를 차단합니다 ──
     system_content = (
         "You are a whitepaper writer. Write the section using ONLY the provided source "
         "event data as evidence. NEVER fabricate proper nouns, dates, or numbers not in "
         "the source. Output markdown body only."
+        + get_writing_context()
         + _EN_ENFORCE
     )
     user_prefix = (
@@ -866,6 +879,8 @@ def _build_faithful_translate_prompt(proper_nouns: List[str]) -> str:
         "## 출력\n"
         "- 원문의 모든 문장을 한국어로 번역하여 content 필드에 담습니다.\n"
         "- 번역문이 원문보다 짧으면 실패입니다. 원문의 모든 정보를 포함해야 합니다.\n"
+        # ── 사용자 커스텀: prompt_config.py의 PURPOSE + TONE + AUDIENCE가 한국어로 주입 ──
+        + get_translation_context()
     )
 
 
