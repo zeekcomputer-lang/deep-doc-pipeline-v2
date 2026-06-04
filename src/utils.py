@@ -211,7 +211,7 @@ def extract_proper_nouns(text: str) -> List[str]:
 
 
 # ────────────────────────────────────────────────────────────
-# Year / Period Extraction (for year-by-year rendering)
+# Year / Period Extraction (for year-by-year translation)
 # ────────────────────────────────────────────────────────────
 
 def extract_years_from_content(text: str) -> List[str]:

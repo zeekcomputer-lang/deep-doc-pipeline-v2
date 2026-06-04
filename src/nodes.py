@@ -135,11 +135,9 @@ def fanout_to_extractor(state: GraphState):
 
 @retry_on_504
 def strict_extractor_node(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Extract ExtractedEvent from a single document.
-    3-retry built into structured_call.
-    v1.2: Auto-truncate doc_text if 95KB budget exceeded.
-    v1.3: English output enforced.
+    """Extract ExtractedEvent from a single document.
+
+    95KB 초과 시 문서 자동 절단. 영어 출력 강제. 3회 retry 내장.
     """
     doc = payload["doc"]
     idx = payload["doc_index"]
@@ -204,8 +202,8 @@ def fanout_to_period_summarizer(state: GraphState):
 @retry_on_504
 def period_summarizer_node(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Monthly key trend summary in exactly 3 sentences.
-    v1.2: Budget-aware batch splitting + sub-summary merging.
-    v1.3: English output enforced.
+
+    예산 초과 시 배치 분할 → 서브 요약 → LLM 병합. 영어 출력 강제.
     """
     period = payload["period"]
     events = payload["events"]
@@ -274,8 +272,8 @@ def period_summarizer_node(payload: Dict[str, Any]) -> Dict[str, Any]:
 @retry_on_504
 def theme_analyzer_node(state: GraphState) -> Dict[str, Any]:
     """Derive overall theme in 1 paragraph.
-    v1.2: Drops oldest monthly summaries if budget exceeded.
-    v1.3: English output enforced.
+
+    예산 초과 시 오래된 월부터 순차 제거. 영어 출력 강제.
     """
     summaries = state["period_summaries"]
     sorted_periods = sorted(summaries.keys())
@@ -322,8 +320,8 @@ def theme_analyzer_node(state: GraphState) -> Dict[str, Any]:
 @retry_on_504
 def draft_planner_node(state: GraphState) -> Dict[str, Any]:
     """Plan whitepaper outline from global_theme + period_summaries.
-    v1.2: Truncates summaries if budget exceeded.
-    v1.3: English output enforced.
+
+    예산 초과 시 요약 절단. 영어 출력 강제.
     """
     theme = state["global_theme"]
     summaries = state["period_summaries"]
@@ -377,11 +375,11 @@ def draft_planner_node(state: GraphState) -> Dict[str, Any]:
 
 @retry_on_504
 def planner_critique_node(state: GraphState) -> Dict[str, Any]:
-    """
-    Outline review: chronological flow + target_period existence validation.
-    Python validates target_period deterministically (blocks LLM hallucination).
-    v1.2: Budget check before LLM call, intent truncation if exceeded.
-    v1.3: English output enforced.
+    """Outline review: chronological flow + target_period existence validation.
+
+    Python이 target_period 존재 여부를 결정론적으로 검증 (LLM 환각 차단).
+    예산 초과 시 intent 절단. 영어 출력 강제.
+    --skip-fact-check 시 LLM 비평 생략 (Python 검증은 유지).
     """
     outline = state["outline"]
     grouped = state["grouped_chunks"]
@@ -491,10 +489,11 @@ def init_writing_node(state: GraphState) -> Dict[str, Any]:
 
 @retry_on_504
 def section_writer_node(state: GraphState) -> Dict[str, Any]:
-    """
-    v1.2: Injects previous_draft + hallucinated_tokens on rewrite.
-          Budget-aware batch splitting with partial draft merging.
-    v1.3: English output enforced with proper noun preservation.
+    """Write section body from source events.
+
+    재작성 시 previous_draft + hallucinated_tokens 블랙리스트 주입.
+    예산 초과 시 이벤트 배치 분할 → 부분 초안 → LLM 병합.
+    영어 출력 강제 + 고유명사 보존.
     """
     outline = state["outline"]
     idx = state["current_section_index"]
@@ -616,10 +615,10 @@ def section_writer_node(state: GraphState) -> Dict[str, Any]:
 
 @retry_on_504
 def fact_checker_node(state: GraphState) -> Dict[str, Any]:
-    """
-    v1.2: Mandatory hallucinated_terms extraction.
-          Budget-aware batch splitting + cross_check_terms.
-    v1.3: English output enforced.
+    """Fact-check section draft against source events.
+
+    환각 토큰 추출 필수. 예산 초과 시 이벤트 배치 분할 + cross_check_terms 교차검증.
+    영어 출력 강제. --skip-fact-check 시 자동 승인.
     """
     # ── 팩트체크 생략 모드: LLM 호출 없이 자동 승인 ──
     if _skip_fact_check:
@@ -796,8 +795,9 @@ def compiler_node(state: GraphState) -> Dict[str, Any]:
 @retry_on_504
 def polish_node(state: GraphState) -> Dict[str, Any]:
     """Section-by-section polishing + streaming. Prevents 504 on large contexts.
-    v1.2: Paragraph-level splitting if section exceeds budget.
-    v1.3: English output enforced.
+
+    예산 초과 시 문단별 분할 윤문. 영어 출력 강제.
+    사실 변경/추가 금지 — 문장 흐름만 개선.
     """
     compiled = state["final_compiled"]
     retry_count = state.get("polish_retry_count", 0)
@@ -872,7 +872,7 @@ def polish_node(state: GraphState) -> Dict[str, Any]:
 # ══════════════════════════════════════════════════════════════
 
 def prepare_translation_node(state: GraphState) -> Dict[str, Any]:
-    """Pure Python: save English output + extract proper nouns for rendering."""
+    """Pure Python: save English output + extract proper nouns for translation."""
     english = state["final_output"]
     nouns = extract_proper_nouns(english)
     plog("prepare_translation", f"English output saved ({len(english)} chars), extracted {len(nouns)} proper nouns")
