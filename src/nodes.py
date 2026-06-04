@@ -728,7 +728,7 @@ def route_next_section(state: GraphState) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
-# Phase 4-B [Step 3]: Assembly → Polish → 2nd Fact-check
+# Phase 4-B [Step 3]: Assembly → Polish
 # ──────────────────────────────────────────────────────────────
 def compiler_node(state: GraphState) -> Dict[str, Any]:
     """Pure Python assembly — no LLM calls."""

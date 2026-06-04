@@ -48,7 +48,7 @@ def main():
         sys.exit(1)
 
     print("=" * 70)
-    print("Deep Doc Pipeline v1.4 — Whitepaper Generator (EN→KR)")
+    print("Deep Doc Pipeline v2.0 — Whitepaper Generator (EN→KR)")
     print(f"모델: {os.getenv('OPENAI_MODEL', 'gpt-oss:20b')} @ "
           f"{os.getenv('OPENAI_BASE_URL', 'http://localhost:11434/v1')}")
     print(f"추론: {args.reasoning} | 504 2회 초과 시 medium 자동 전환")
