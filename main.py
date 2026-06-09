@@ -3,7 +3,6 @@
 
 사용법:
     python -m main                              # 전체 실행
-    python -m main --skip-fact-check            # 팩트체크 생략
     python -m main --export-kb kb.json          # KB JSON 추출
     python -m main --resume output/... --resume-from step3
 
@@ -26,7 +25,7 @@ except ImportError:
     pass
 
 from src.graph import build_graph, build_resume_graph
-from src.nodes import LOCAL_DATA_PATH, set_skip_fact_check
+from src.nodes import LOCAL_DATA_PATH
 from src.logger import reset_stats, summary, log_error
 from src.llm import reset_504_state, set_default_reasoning
 from src.artifacts import init_run_dir, set_run_dir, load_run_state, list_runs, save_json
@@ -53,8 +52,6 @@ def parse_args():
                    help="Knowledge Base를 별도 JSON으로 추출")
     p.add_argument("--reasoning", choices=["high", "medium"], default="high",
                    help="LLM 추론 강도 (high: 기본, medium: 빠른 응답)")
-    p.add_argument("--skip-fact-check", action="store_true",
-                   help="팩트체크/환각 검증 생략 (빠른 실행)")
     p.add_argument("--resume", default=None, metavar="RUN_DIR",
                    help="이전 실행 디렉토리에서 재개")
     p.add_argument("--resume-from", default="step3",
@@ -84,7 +81,6 @@ def main():
     reset_stats()
     reset_504_state()
     set_default_reasoning(args.reasoning)
-    set_skip_fact_check(args.skip_fact_check)
 
     is_resume = args.resume is not None
 
@@ -103,8 +99,7 @@ def main():
         print(f"Deep Doc Pipeline v3.0 — RESUME from {args.resume_from}")
         print(f"실행 디렉토리: {resume_dir}")
         print(f"모델: {os.getenv('OPENAI_MODEL', 'gpt-oss:20b')}")
-        skip_fc = "⚠️ 팩트체크 생략" if args.skip_fact_check else "팩트체크 ON"
-        print(f"추론: {args.reasoning} | {skip_fc}")
+        print(f"추론: {args.reasoning}")
         print("=" * 70)
 
     # ── 전체 실행 모드 ──
@@ -123,10 +118,7 @@ def main():
             "temporal_index": [],
             "category_analyses": {},
             "completed_sections": {},
-            "unverified_sections": [],
-            "hallucinated_tokens": [],
             "narrative_retry_count": 0,
-            "section_retry_count": 0,
         }
         graph = build_graph()
 
@@ -134,8 +126,7 @@ def main():
         print("Deep Doc Pipeline v3.0 — Hybrid Whitepaper Generator (KR-first)")
         print(f"모델: {os.getenv('OPENAI_MODEL', 'gpt-oss-20b')} @ "
               f"{os.getenv('OPENAI_BASE_URL', 'http://localhost:11434/v1')}")
-        skip_fc = "⚠️ 팩트체크 생략" if args.skip_fact_check else "팩트체크 ON"
-        print(f"추론: {args.reasoning} | {skip_fc} | 504 2회 초과 시 medium 자동 전환")
+        print(f"추론: {args.reasoning} | 504 2회 초과 시 medium 자동 전환")
         print(f"산출물: {run_dir}/")
         print("=" * 70)
 
@@ -190,9 +181,6 @@ def main():
             print(f"    {cat}: {cnt}건")
         print(f"  시간순 인덱스 : {len(ti)}건 (dated: {sum(1 for t in ti if t.get('period') != 'undated')})")
         print(f"  완성 섹션    : {len(final_state.get('completed_sections', {}))}개")
-        unv = final_state.get("unverified_sections", [])
-        if unv:
-            print(f"  ⚠️ 미검증 섹션 : {sorted(unv)}")
     print(f"  최종 백서    : {len(final):,} chars")
     print("=" * 70)
 

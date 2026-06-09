@@ -41,36 +41,17 @@ def build_graph():
         },
     )
 
-    # ── Step 3: Executive Summary Writing
+    # ── Step 3: Executive Summary Writing (no fact-checker)
     g.add_node("init_writing", N.init_writing_node)
     g.add_node("section_writer", N.section_writer_node)
-    g.add_node("fact_checker", N.fact_checker_node)
-    g.add_node("retry_section", N.retry_section_node)
     g.add_node("save_section", N.save_section_node)
-    g.add_node("save_section_with_warning", N.save_section_with_warning_node)
 
     g.add_edge("init_writing", "section_writer")
-    g.add_edge("section_writer", "fact_checker")
-
-    g.add_conditional_edges(
-        "fact_checker",
-        N.route_section_draft,
-        {
-            "retry_section": "retry_section",
-            "save_section": "save_section",
-            "save_section_with_warning": "save_section_with_warning",
-        },
-    )
-    g.add_edge("retry_section", "section_writer")
+    g.add_edge("section_writer", "save_section")
 
     # After save: next section or Step 4
     g.add_conditional_edges(
         "save_section",
-        N.route_next_section,
-        {"section_writer": "section_writer", "timeline_formatter": "timeline_formatter"},
-    )
-    g.add_conditional_edges(
-        "save_section_with_warning",
         N.route_next_section,
         {"section_writer": "section_writer", "timeline_formatter": "timeline_formatter"},
     )
@@ -104,10 +85,7 @@ def build_resume_graph(resume_from: str):
         g.add_node("narrative_critique", N.narrative_critique_node)
         g.add_node("init_writing", N.init_writing_node)
         g.add_node("section_writer", N.section_writer_node)
-        g.add_node("fact_checker", N.fact_checker_node)
-        g.add_node("retry_section", N.retry_section_node)
         g.add_node("save_section", N.save_section_node)
-        g.add_node("save_section_with_warning", N.save_section_with_warning_node)
         g.add_node("timeline_formatter", N.timeline_formatter_node)
         g.add_node("compiler", N.compiler_node)
         g.add_node("polish", N.polish_node)
@@ -120,19 +98,9 @@ def build_resume_graph(resume_from: str):
             {"narrative_planner": "narrative_planner", "init_writing": "init_writing"},
         )
         g.add_edge("init_writing", "section_writer")
-        g.add_edge("section_writer", "fact_checker")
-        g.add_conditional_edges(
-            "fact_checker", N.route_section_draft,
-            {"retry_section": "retry_section", "save_section": "save_section",
-             "save_section_with_warning": "save_section_with_warning"},
-        )
-        g.add_edge("retry_section", "section_writer")
+        g.add_edge("section_writer", "save_section")
         g.add_conditional_edges(
             "save_section", N.route_next_section,
-            {"section_writer": "section_writer", "timeline_formatter": "timeline_formatter"},
-        )
-        g.add_conditional_edges(
-            "save_section_with_warning", N.route_next_section,
             {"section_writer": "section_writer", "timeline_formatter": "timeline_formatter"},
         )
         g.add_edge("timeline_formatter", "compiler")
@@ -142,29 +110,16 @@ def build_resume_graph(resume_from: str):
     elif resume_from == "step3":
         g.add_node("init_writing", N.init_writing_node)
         g.add_node("section_writer", N.section_writer_node)
-        g.add_node("fact_checker", N.fact_checker_node)
-        g.add_node("retry_section", N.retry_section_node)
         g.add_node("save_section", N.save_section_node)
-        g.add_node("save_section_with_warning", N.save_section_with_warning_node)
         g.add_node("timeline_formatter", N.timeline_formatter_node)
         g.add_node("compiler", N.compiler_node)
         g.add_node("polish", N.polish_node)
 
         g.add_edge(START, "init_writing")
         g.add_edge("init_writing", "section_writer")
-        g.add_edge("section_writer", "fact_checker")
-        g.add_conditional_edges(
-            "fact_checker", N.route_section_draft,
-            {"retry_section": "retry_section", "save_section": "save_section",
-             "save_section_with_warning": "save_section_with_warning"},
-        )
-        g.add_edge("retry_section", "section_writer")
+        g.add_edge("section_writer", "save_section")
         g.add_conditional_edges(
             "save_section", N.route_next_section,
-            {"section_writer": "section_writer", "timeline_formatter": "timeline_formatter"},
-        )
-        g.add_conditional_edges(
-            "save_section_with_warning", N.route_next_section,
             {"section_writer": "section_writer", "timeline_formatter": "timeline_formatter"},
         )
         g.add_edge("timeline_formatter", "compiler")

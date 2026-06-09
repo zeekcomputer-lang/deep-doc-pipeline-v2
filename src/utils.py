@@ -182,27 +182,19 @@ def format_category_entries(
 def compile_executive_summary(
     section_plan: List[Dict],
     completed: Dict[int, str],
-    unverified: List[int],
 ) -> str:
     """Assemble Executive Summary from completed sections. Pure Python, no LLM."""
     parts: List[str] = ["# Executive Summary\n"]
     for i, item in enumerate(section_plan):
         title = item.get("title", f"섹션 {i}")
         body = completed.get(i, "_(섹션 누락)_")
-        warn = ""
-        if i in unverified:
-            warn = (
-                "> ⚠️ **미검증 섹션** — 팩트체크 3회 실패. "
-                "수동 데이터 검증 필요.\n\n"
-            )
-        parts.append(f"\n## {title}\n\n{warn}{body}\n")
+        parts.append(f"\n## {title}\n\n{body}\n")
     return "".join(parts)
 
 
 def compile_hybrid_whitepaper(
     executive_summary: str,
     chronological_appendix: str,
-    unverified: List[int],
     category_warnings: List[str],
 ) -> str:
     """Final assembly: Executive Summary + Appendix + Audit Log. Pure Python."""
@@ -212,17 +204,11 @@ def compile_hybrid_whitepaper(
     parts.append("# 부록: 월별 상세 타임라인\n\n")
     parts.append(chronological_appendix)
 
-    # Audit log
-    audit_items = []
-    if unverified:
-        audit_items.append(f"- 미검증 섹션 인덱스: {sorted(unverified)}")
-    for w in category_warnings:
-        audit_items.append(f"- {w}")
-
-    if audit_items:
+    # Audit log (category warnings only)
+    if category_warnings:
         parts.append("\n\n---\n\n### 파이프라인 감사 로그\n\n")
-        parts.append("\n".join(audit_items))
-        parts.append("\n")
+        for w in category_warnings:
+            parts.append(f"- {w}\n")
 
     return "".join(parts)
 
@@ -244,6 +230,88 @@ def split_by_section(compiled: str) -> Tuple[str, List[str]]:
     header = parts[0] if parts else ""
     sections = parts[1:] if len(parts) > 1 else []
     return header, sections
+
+
+# ──────────────────────────────────────────────────────────────
+# Knowledge Base JSON export
+# ──────────────────────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────
+# Proper Noun Extraction
+# ──────────────────────────────────────────────────────────────
+
+_COMMON_WORDS: set = {
+    "the", "this", "that", "these", "those", "there", "then", "thus",
+    "however", "moreover", "furthermore", "therefore", "although",
+    "because", "since", "while", "after", "before", "during",
+    "until", "unless", "whether", "where", "when", "what", "which",
+    "who", "whom", "how", "why", "and", "but", "or", "not", "all",
+    "each", "every", "some", "any", "no", "most", "many", "few",
+    "several", "both", "other", "another", "such", "new", "old",
+    "first", "last", "next", "same", "different", "may", "can",
+    "will", "should", "could", "would", "must", "need", "key",
+    "section", "summary", "report", "period", "phase", "step",
+    "note", "warning", "result", "total", "data", "event", "issue",
+    "action", "date", "month", "year", "day", "time", "also",
+    "with", "from", "into", "about", "over", "under", "through",
+    "between", "against", "without", "within", "along", "across",
+    "behind", "beyond", "plus", "except", "for", "was", "were",
+    "been", "being", "have", "has", "had", "having", "did", "does",
+    "doing", "done", "made", "make", "take", "taken", "took",
+    "give", "given", "gave", "set", "put", "keep", "kept", "let",
+    "began", "begin", "beginning", "end", "ended", "ending",
+    "include", "included", "including", "shown", "show", "showed",
+    "based", "focus", "focused", "major", "main", "primary",
+    "secondary", "critical", "important", "significant", "successful",
+    "comprehensive", "overall", "specific", "particular", "general",
+    "additional", "further", "related", "relevant", "ongoing",
+    "initial", "final", "previous", "current", "future", "potential",
+    "proposed", "required", "necessary", "available", "possible",
+    "effective", "various", "certain", "entire", "complete", "full",
+    "whole", "target", "source", "original", "following", "above",
+    "below", "here", "per", "via", "its", "their", "our", "your",
+    "his", "her", "they", "we", "you", "it", "is", "are", "an",
+    "of", "in", "on", "at", "to", "by", "as", "if",
+}
+
+
+def extract_proper_nouns(text: str) -> List[str]:
+    """Extract candidate proper nouns from text for preservation.
+
+    Heuristic-based — conservative (over-preservation > under-preservation).
+    """
+    candidates: set = set()
+
+    # 1. Dates (YYYY-MM-DD, YYYY-MM)
+    candidates.update(re.findall(r'\d{4}-\d{2}-\d{2}', text))
+    candidates.update(re.findall(r'\b\d{4}-\d{2}(?!\d)', text))
+
+    # 2. Acronyms (2+ uppercase, possibly with hyphens/numbers)
+    candidates.update(re.findall(r'\b[A-Z][A-Z0-9]{1,}(?:-[A-Z0-9]+)*\b', text))
+
+    # 3. CamelCase words (e.g., GitHub, FastAPI, LangGraph)
+    candidates.update(re.findall(r'\b[A-Z][a-z]+(?:[A-Z][a-z]+)+\b', text))
+
+    # 4. Capitalized words mid-sentence
+    for m in re.finditer(r'(?<=[a-z,;:]\s)([A-Z][a-z]{2,})', text):
+        word = m.group(1)
+        if word.lower() not in _COMMON_WORDS:
+            candidates.add(word)
+
+    # 5. Multi-word capitalized phrases
+    for m in re.finditer(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b', text):
+        phrase = m.group(1)
+        words = phrase.split()
+        if any(w.lower() not in _COMMON_WORDS for w in words):
+            candidates.add(phrase)
+
+    # 6. Numbers with units
+    candidates.update(re.findall(r'\d+(?:\.\d+)?\s*(?:%|KB|MB|GB|TB|ms|rpm|RPM)', text))
+
+    # 7. Backtick-quoted tokens
+    candidates.update(re.findall(r'`([^`]+)`', text))
+
+    return sorted(c for c in candidates if len(c) >= 2)
 
 
 # ──────────────────────────────────────────────────────────────

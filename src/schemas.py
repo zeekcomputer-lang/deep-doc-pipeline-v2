@@ -92,23 +92,6 @@ class SectionDraft(BaseModel):
     )
 
 
-class FactCheckResult(BaseModel):
-    """팩트체크 결과.
-
-    hallucinated_terms: knowledge_base에 없는 토큰 목록 → 재작성 시 블랙리스트 주입.
-    """
-    is_draft_approved: bool = Field(
-        ..., description="환각이나 오류가 없으면 True",
-    )
-    feedback: str = Field(
-        ..., description="반려 사유 (원본에 없는 부분 구체적 명시, 한국어)",
-    )
-    hallucinated_terms: List[str] = Field(
-        default_factory=list,
-        description="초안에 있으나 원본에 없는 토큰 (고유명사·날짜·수치)",
-    )
-
-
 # ──────────────────────────────────────────────────────────────
 # Step 4: Hybrid Assembly
 # ──────────────────────────────────────────────────────────────

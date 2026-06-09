@@ -28,7 +28,6 @@ from .schemas import (
     NarrativeFlow,
     NarrativeCritique,
     SectionDraft,
-    FactCheckResult,
     TimelineEntry,
     PolishedDocument,
 )
@@ -46,8 +45,6 @@ from .context_guard import (
     available_data_budget,
     measure_text_bytes,
     split_items_for_budget,
-    trim_retry_context,
-    cross_check_terms,
 )
 from .prompt_config import (
     get_extraction_context,
@@ -79,13 +76,7 @@ from .artifacts import save_json, save_text
 
 LOCAL_DATA_PATH = "data/records.jsonl"
 
-_skip_fact_check: bool = False
 
-
-def set_skip_fact_check(v: bool) -> None:
-    """외부에서 팩트체크 비활성화 설정."""
-    global _skip_fact_check
-    _skip_fact_check = v
 
 
 # ══════════════════════════════════════════════════════════════
@@ -660,15 +651,11 @@ def route_narrative(state: GraphState) -> str:
 # ── 3-0  init_writing ────────────────────────────────────────
 
 def init_writing_node(state: GraphState) -> dict:
-    """집필 루프 초기화. 섹션 인덱스와 재시도 카운터 리셋."""
+    """집필 루프 초기화. 섹션 인덱스 리셋."""
     sections = state.get("executive_sections", [])
     plog("init_writing", f"집필 시작: {len(sections)}개 섹션")
     return {
         "current_section_index": 0,
-        "section_retry_count": 0,
-        "previous_draft": "",
-        "hallucinated_tokens": [],
-        "draft_feedback": "",
         "current_draft": "",
     }
 
@@ -695,16 +682,11 @@ def section_writer_node(state: GraphState) -> dict:
     """Executive Summary 섹션 1개 집필 (LLM).
 
     현재 섹션 기획(title, intent, category_refs)에 따라
-    knowledge_base에서 관련 데이터를 추출하여 초안 작성.
-    재시도 시 이전 초안 + 피드백 + 환각 토큰 블랙리스트 포함.
+    knowledge_base에서 관련 데이터를 추출하여 집필.
     """
     idx = state.get("current_section_index", 0)
     sections = state.get("executive_sections", [])
     kb = state.get("knowledge_base", {})
-    retry_count = state.get("section_retry_count", 0)
-    previous_draft = state.get("previous_draft", "")
-    feedback = state.get("draft_feedback", "")
-    hallucinated = state.get("hallucinated_tokens", [])
 
     if idx >= len(sections):
         plog("section_writer", f"인덱스 {idx} 초과 — 빈 초안 반환")
@@ -739,7 +721,6 @@ def section_writer_node(state: GraphState) -> dict:
 
     entries_bytes = measure_text_bytes(entries_text)
     if entries_bytes > budget:
-        # Split and take only first batch
         batches = split_items_for_budget(
             relevant_entries,
             format_entries_for_prompt,
@@ -752,26 +733,6 @@ def section_writer_node(state: GraphState) -> dict:
         f"## 참조 데이터 (카테고리: {', '.join(category_refs)})\n\n"
         f"{entries_text}"
     )
-
-    # Retry context
-    if retry_count > 0 and (previous_draft or feedback):
-        prev_draft, fb, hal_tokens = trim_retry_context(
-            previous_draft, feedback, hallucinated,
-            budget_bytes=20 * 1024,
-        )
-
-        retry_block = "\n\n---\n\n## ⚠️ 재작성 지시\n\n"
-        if fb:
-            retry_block += f"**이전 반려 사유:**\n{fb}\n\n"
-        if hal_tokens:
-            retry_block += (
-                f"**환각 토큰 블랙리스트 (절대 사용 금지):**\n"
-                f"{', '.join(hal_tokens)}\n\n"
-            )
-        if prev_draft:
-            retry_block += f"**이전 초안 (참고용):**\n{prev_draft}\n"
-
-        user_content += retry_block
 
     messages = [
         {"role": "system", "content": sys_prompt},
@@ -787,222 +748,30 @@ def section_writer_node(state: GraphState) -> dict:
 
     plog(
         "section_writer",
-        f"섹션 [{idx}] '{title}' 초안 완료 "
-        f"({measure_text_bytes(result.content)}B, retry={retry_count})",
+        f"섹션 [{idx}] '{title}' 집필 완료 "
+        f"({measure_text_bytes(result.content)}B)",
     )
 
     return {"current_draft": result.content}
 
 
-# ── 3-2  fact_checker ────────────────────────────────────────
-
-_FACTCHECK_SYSTEM = """\
-당신은 팩트체크 전문가입니다.
-아래 초안을 원본 데이터와 대조하여 검증하십시오.
-
-[검증 규칙]
-1. 초안의 모든 사실적 진술이 원본 데이터에 근거하는지 확인
-2. 원본에 없는 사실, 수치, 날짜가 추가되었는지 확인
-3. 환각된 토큰(고유명사·날짜·수치)을 hallucinated_terms에 반드시 나열
-4. 고유명사가 원어로 올바르게 보존되었는지 확인
-"""
-
-
-@retry_on_504
-def fact_checker_node(state: GraphState) -> dict:
-    """초안 팩트체크 (LLM).
-
-    현재 초안을 knowledge_base 원본 데이터와 대조하여
-    환각(hallucination)과 사실 오류를 검출.
-    _skip_fact_check가 True이면 자동 승인.
-    """
-    draft = state.get("current_draft", "")
-    idx = state.get("current_section_index", 0)
-
-    if _skip_fact_check:
-        psub("fact_checker", f"섹션 [{idx}] 팩트체크 스킵 (비활성화됨)")
-        return {
-            "is_draft_approved": True,
-            "draft_feedback": "",
-            "hallucinated_tokens": [],
-        }
-
-    if not draft.strip():
-        plog("fact_checker", f"섹션 [{idx}] 초안 비어있음 → 자동 반려")
-        return {
-            "is_draft_approved": False,
-            "draft_feedback": "초안이 비어있습니다.",
-            "hallucinated_tokens": [],
-        }
-
-    kb = state.get("knowledge_base", {})
-    sections = state.get("executive_sections", [])
-    section = sections[idx] if idx < len(sections) else {}
-    category_refs = section.get("category_refs", [])
-
-    # Gather reference entries for comparison
-    ref_entries: List[Dict] = []
-    for ref in category_refs:
-        cat = normalize_category(ref)
-        ref_entries.extend(kb.get(cat, []))
-
-    ref_text = format_entries_for_prompt(ref_entries) if ref_entries else "(참조 데이터 없음)"
-
-    sys_prompt = _FACTCHECK_SYSTEM + get_proper_noun_guard()
-
-    # Budget-aware truncation for reference data
-    budget = available_data_budget(
-        sys_prompt,
-        FactCheckResult.model_json_schema(),
-        extra_fixed=draft,
-        budget_override=effective_budget(),
-    )
-
-    ref_bytes = measure_text_bytes(ref_text)
-    if ref_bytes > budget:
-        batches = split_items_for_budget(
-            ref_entries,
-            format_entries_for_prompt,
-            budget,
-        )
-        ref_text = format_entries_for_prompt(batches[0]) if batches else ref_text
-        psub("fact_checker", f"참조 데이터 절삭: {ref_bytes}B → ~{measure_text_bytes(ref_text)}B")
-
-    messages = [
-        {"role": "system", "content": sys_prompt},
-        {
-            "role": "user",
-            "content": (
-                "## 검증 대상 초안\n\n"
-                f"{draft}\n\n"
-                "---\n\n"
-                "## 원본 데이터 (ground truth)\n\n"
-                f"{ref_text}"
-            ),
-        },
-    ]
-
-    result: FactCheckResult = structured_call(
-        messages,
-        response_model=FactCheckResult,
-        role="judge",
-        temperature=0.0,
-    )
-
-    # Cross-check hallucinated terms against ALL knowledge entries
-    all_entries: List[Dict] = []
-    for cat in CATEGORIES:
-        all_entries.extend(kb.get(cat, []))
-
-    verified_hallucinations = cross_check_terms(
-        result.hallucinated_terms, all_entries
-    )
-
-    # If hallucinated terms were all found in data, override approval
-    approved = result.is_draft_approved
-    if not approved and not verified_hallucinations:
-        approved = True
-        psub(
-            "fact_checker",
-            f"섹션 [{idx}] 환각 토큰 교차 검증 통과 → 승인으로 변경",
-        )
-
-    status = "✅ 통과" if approved else f"❌ 반려 ({len(verified_hallucinations)}건 환각)"
-    plog("fact_checker", f"섹션 [{idx}] {status}")
-
-    return {
-        "is_draft_approved": approved,
-        "draft_feedback": result.feedback,
-        "hallucinated_tokens": verified_hallucinations,
-    }
-
-
-# ── 3-3  retry_section ──────────────────────────────────────
-
-def retry_section_node(state: GraphState) -> dict:
-    """섹션 재시도 카운터 증가 + 이전 초안 저장."""
-    count = state.get("section_retry_count", 0)
-    idx = state.get("current_section_index", 0)
-    draft = state.get("current_draft", "")
-
-    plog("retry_section", f"섹션 [{idx}] 재시도 #{count + 1}")
-    return {
-        "section_retry_count": count + 1,
-        "previous_draft": draft,
-    }
-
-
-# ── 3-4  save_section ───────────────────────────────────────
+# ── 3-2  save_section ───────────────────────────────────────
 
 def save_section_node(state: GraphState) -> dict:
-    """팩트체크 통과한 섹션 저장 및 인덱스 전진."""
+    """집필된 섹션 저장 및 인덱스 전진."""
     idx = state.get("current_section_index", 0)
     draft = state.get("current_draft", "")
     sections = state.get("executive_sections", [])
     title = sections[idx].get("title", f"섹션 {idx}") if idx < len(sections) else f"섹션 {idx}"
 
     save_text(f"step3_sections/section_{idx}.md", draft)
-
     plog("save_section", f"섹션 [{idx}] '{title}' 저장 완료 ✅")
 
     return {
         "completed_sections": {idx: draft},
         "current_section_index": idx + 1,
-        "section_retry_count": 0,
-        "previous_draft": "",
-        "hallucinated_tokens": [],
-        "draft_feedback": "",
         "current_draft": "",
-        "is_draft_approved": False,
     }
-
-
-# ── 3-5  save_section_with_warning ───────────────────────────
-
-def save_section_with_warning_node(state: GraphState) -> dict:
-    """팩트체크 3회 실패 섹션을 경고 워터마크와 함께 저장."""
-    idx = state.get("current_section_index", 0)
-    draft = state.get("current_draft", "")
-    sections = state.get("executive_sections", [])
-    title = sections[idx].get("title", f"섹션 {idx}") if idx < len(sections) else f"섹션 {idx}"
-
-    watermarked = (
-        "> ⚠️ **미검증 섹션** — 팩트체크 3회 실패. "
-        "수동 데이터 검증 필요.\n\n"
-        + draft
-    )
-
-    save_text(f"step3_sections/section_{idx}_UNVERIFIED.md", watermarked)
-
-    plog("save_section_with_warning", f"섹션 [{idx}] '{title}' ⚠️ 경고 저장")
-
-    return {
-        "completed_sections": {idx: watermarked},
-        "current_section_index": idx + 1,
-        "section_retry_count": 0,
-        "previous_draft": "",
-        "hallucinated_tokens": [],
-        "draft_feedback": "",
-        "current_draft": "",
-        "is_draft_approved": False,
-        "unverified_sections": [idx],
-    }
-
-
-# ── Router: route_section_draft ──────────────────────────────
-
-def route_section_draft(state: GraphState) -> str:
-    """팩트체크 결과에 따른 분기.
-
-    - 승인 → save_section
-    - 반려 & 재시도 >= 3 → save_section_with_warning (강제 저장)
-    - 반려 & 재시도 < 3 → retry_section (재작성)
-    """
-    if state.get("is_draft_approved"):
-        return "save_section"
-    if state.get("section_retry_count", 0) >= 3:
-        return "save_section_with_warning"
-    return "retry_section"
 
 
 # ── Router: route_next_section ───────────────────────────────
@@ -1049,10 +818,9 @@ def timeline_formatter_node(state: GraphState) -> dict:
     temporal_index = state.get("temporal_index", [])
     completed_sections = state.get("completed_sections", {})
     sections = state.get("executive_sections", [])
-    unverified = state.get("unverified_sections", [])
 
     # First, save executive summary artifact
-    exec_summary = compile_executive_summary(sections, completed_sections, unverified)
+    exec_summary = compile_executive_summary(sections, completed_sections)
     save_text("step3_executive_summary.md", exec_summary)
     psub("timeline_formatter", f"Executive Summary 저장 완료 ({len(completed_sections)}개 섹션)")
 
@@ -1134,14 +902,13 @@ def compiler_node(state: GraphState) -> dict:
     """
     exec_summary = state.get("executive_summary", "")
     appendix = state.get("chronological_appendix", "")
-    unverified = state.get("unverified_sections", [])
     kb = state.get("knowledge_base", {})
 
     # If executive_summary not yet compiled, compile it now
     if not exec_summary:
         completed = state.get("completed_sections", {})
         sections = state.get("executive_sections", [])
-        exec_summary = compile_executive_summary(sections, completed, unverified)
+        exec_summary = compile_executive_summary(sections, completed)
 
     # Category warnings for audit log
     category_warnings = check_category_balance(kb)
@@ -1149,14 +916,12 @@ def compiler_node(state: GraphState) -> dict:
     compiled = compile_hybrid_whitepaper(
         exec_summary,
         appendix,
-        unverified,
         category_warnings,
     )
 
     plog(
         "compiler",
-        f"하이브리드 백서 조립 완료: {measure_text_bytes(compiled)}B "
-        f"(미검증 {len(unverified)}건)",
+        f"하이브리드 백서 조립 완료: {measure_text_bytes(compiled)}B",
     )
 
     save_text("step4_compiled.md", compiled)
@@ -1285,7 +1050,6 @@ def _polish_single_block(sys_prompt: str, text: str) -> str:
 __all__ = [
     # Global config
     "LOCAL_DATA_PATH",
-    "set_skip_fact_check",
     # Decorator
     "retry_on_504",
     # Step 1: Knowledge Structuring
@@ -1301,11 +1065,7 @@ __all__ = [
     # Step 3: Executive Summary Writing
     "init_writing_node",
     "section_writer_node",
-    "fact_checker_node",
-    "retry_section_node",
     "save_section_node",
-    "save_section_with_warning_node",
-    "route_section_draft",
     "route_next_section",
     # Step 4: Hybrid Assembly
     "timeline_formatter_node",

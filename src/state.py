@@ -1,5 +1,5 @@
 """
-LangGraph global state — v3.0 (KR-first, category-based).
+LangGraph global state — v3.0 (KR-first, category-based, no fact-checker).
 """
 from __future__ import annotations
 import operator
@@ -29,13 +29,7 @@ class GraphState(TypedDict, total=False):
     executive_sections: List[Dict]                               # 계획된 섹션 목록
     current_section_index: int                                   # 현재 집필 커서
     current_draft: str                                           # 현재 초안
-    previous_draft: str                                          # 직전 반려 초안 (회귀 방지)
-    hallucinated_tokens: Annotated[List[str], operator.add]      # 환각 토큰 블랙리스트
-    draft_feedback: str                                          # 팩트체크 피드백
-    is_draft_approved: bool                                      # 초안 승인 여부
-    section_retry_count: int                                     # 섹션 재시도 횟수
     completed_sections: Annotated[Dict[int, str], update_dict]   # idx → 완성 텍스트
-    unverified_sections: Annotated[List[int], operator.add]      # Fail-Safe 감사 로그
 
     # ── Step 4: Hybrid Assembly ────────────────────────────────
     executive_summary: str                                       # 조립된 Executive Summary
