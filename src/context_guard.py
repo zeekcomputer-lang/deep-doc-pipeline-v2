@@ -153,12 +153,21 @@ def cross_check_terms(
     candidates: List[str],
     events: List[Dict],
 ) -> List[str]:
-    """Cross-check candidate hallucinated tokens against all events. Returns truly absent tokens."""
+    """Cross-check candidate hallucinated tokens against all entries.
+
+    v3: knowledge entries use title/description/source_ref/date_hint fields.
+    v2 compat: also checks date/issue/action if present.
+    Returns truly absent tokens.
+    """
     if not candidates or not events:
         return candidates
 
     all_text = " ".join(
-        f"{e.get('date', '')} {e.get('issue', '')} {e.get('action', '')}"
+        " ".join(
+            str(e.get(k, ""))
+            for k in ("title", "description", "source_ref", "date_hint",
+                      "date", "issue", "action", "category", "impact_level")
+        )
         for e in events
     )
     return [term for term in candidates if term not in all_text]
