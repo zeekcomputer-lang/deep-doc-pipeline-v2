@@ -95,9 +95,6 @@ def load_run_state(run_dir: str | Path) -> Dict[str, Any]:
         "category_analyses": {},
         "narrative_retry_count": 0,
         "completed_sections": {},
-        "unverified_sections": [],
-        "hallucinated_tokens": [],
-        "section_retry_count": 0,
     }
 
     # Step 1
