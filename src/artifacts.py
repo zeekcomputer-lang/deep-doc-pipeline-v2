@@ -1,18 +1,15 @@
 """
-중간 산출물 저장/로드 모듈.
+중간 산출물 저장/로드 모듈 — v3.0 (step-based output).
 
 실행마다 output/YYYYMMDD_HHMMSS/ 디렉토리를 생성하고,
-각 Phase 완료 시점의 산출물을 파일로 저장합니다.
-
---resume <run_dir> 로 이전 실행의 산출물을 로드하여
-특정 Phase부터 재실행할 수 있습니다.
+각 Step 완료 시점의 산출물을 파일로 저장합니다.
 """
 from __future__ import annotations
 
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .logger import plog
 
@@ -21,11 +18,7 @@ _run_dir: Optional[Path] = None
 
 
 def init_run_dir(base: str = "output") -> Path:
-    """실행 디렉토리 생성. Windows 호환 파일명 (YYYYMMDD_HHMMSS).
-
-    Returns:
-        생성된 디렉토리 경로 (예: output/20260604_162400/)
-    """
+    """실행 디렉토리 생성."""
     global _run_dir
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     _run_dir = Path(base) / ts
@@ -35,7 +28,7 @@ def init_run_dir(base: str = "output") -> Path:
 
 
 def set_run_dir(path: Path) -> None:
-    """외부에서 run_dir을 직접 설정 (resume 시 사용)."""
+    """외부에서 run_dir 직접 설정 (resume 시)."""
     global _run_dir
     _run_dir = path
 
@@ -47,7 +40,7 @@ def get_run_dir() -> Optional[Path]:
 # ── 저장 함수 ────────────────────────────────────────────────
 
 def save_json(name: str, data: Any) -> None:
-    """JSON 아티팩트 저장. run_dir 미설정 시 무시."""
+    """JSON 아티팩트 저장."""
     if _run_dir is None:
         return
     path = _run_dir / name
@@ -59,7 +52,7 @@ def save_json(name: str, data: Any) -> None:
 
 
 def save_text(name: str, text: str) -> None:
-    """텍스트 아티팩트 저장. run_dir 미설정 시 무시."""
+    """텍스트 아티팩트 저장."""
     if _run_dir is None:
         return
     path = _run_dir / name
@@ -70,14 +63,12 @@ def save_text(name: str, text: str) -> None:
 # ── 로드 함수 (resume용) ──────────────────────────────────────
 
 def _load_json_safe(path: Path) -> Any:
-    """JSON 파일 로드. 없으면 None."""
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _load_text_safe(path: Path) -> Optional[str]:
-    """텍스트 파일 로드. 없으면 None."""
     if not path.exists():
         return None
     return path.read_text(encoding="utf-8")
@@ -86,10 +77,11 @@ def _load_text_safe(path: Path) -> Optional[str]:
 def load_run_state(run_dir: str | Path) -> Dict[str, Any]:
     """이전 실행 디렉토리에서 GraphState 복원.
 
-    존재하는 아티팩트만 로드. 없는 필드는 기본값으로 남김.
-    resume_from 단계에 따라 필요한 데이터가 달라짐:
-      - translate: english_output + proper_nouns (+ final_output as english)
-      - polish:    final_compiled + outline + completed_sections + grouped_chunks
+    v3 step-based 산출물 파일명:
+      step1_knowledge_base.json, step1_temporal_index.json
+      step2_category_analyses.json, step2_narrative_flow.md
+      step3_executive_summary.md (+ step3_sections/*.md)
+      step4_appendix_timeline.md, step4_final.md
     """
     d = Path(run_dir)
     if not d.is_dir():
@@ -97,42 +89,47 @@ def load_run_state(run_dir: str | Path) -> Dict[str, Any]:
 
     state: Dict[str, Any] = {
         "raw_docs": [],
-        "extracted_events": [],
-        "period_summaries": {},
+        "knowledge_entries": [],
+        "knowledge_base": {},
+        "temporal_index": [],
+        "category_analyses": {},
+        "narrative_retry_count": 0,
         "completed_sections": {},
         "unverified_sections": [],
         "hallucinated_tokens": [],
-        "outline_retry_count": 0,
         "section_retry_count": 0,
-        "proper_nouns": [],
     }
 
-    # Phase 1
-    ev = _load_json_safe(d / "phase1_extracted_events.json")
-    if ev is not None:
-        state["extracted_events"] = ev
+    # Step 1
+    kb = _load_json_safe(d / "step1_knowledge_base.json")
+    if kb is not None:
+        # KB export format has "categories" key
+        if isinstance(kb, dict) and "categories" in kb:
+            state["knowledge_base"] = kb["categories"]
+        else:
+            state["knowledge_base"] = kb
 
-    gc = _load_json_safe(d / "phase1_grouped_chunks.json")
-    if gc is not None:
-        state["grouped_chunks"] = gc
+    ti = _load_json_safe(d / "step1_temporal_index.json")
+    if ti is not None:
+        state["temporal_index"] = ti
 
-    # Phase 2
-    ps = _load_json_safe(d / "phase2_period_summaries.json")
-    if ps is not None:
-        state["period_summaries"] = ps
+    # Step 2
+    ca = _load_json_safe(d / "step2_category_analyses.json")
+    if ca is not None:
+        state["category_analyses"] = ca
 
-    gt = _load_text_safe(d / "phase2_global_theme.txt")
-    if gt is not None:
-        state["global_theme"] = gt
+    nf = _load_text_safe(d / "step2_narrative_flow.md")
+    if nf is not None:
+        state["narrative_flow"] = nf
+        state["is_narrative_approved"] = True
 
-    # Phase 3
-    ol = _load_json_safe(d / "phase3_outline.json")
-    if ol is not None:
-        state["outline"] = ol
-        state["is_outline_approved"] = True
+    # Step 2 → Step 3: extract section_plan from narrative_flow JSON
+    nf_json = _load_json_safe(d / "step2_narrative_flow.json")
+    if nf_json is not None and "section_plan" in nf_json:
+        state["executive_sections"] = nf_json["section_plan"]
 
-    # Phase 4 — sections
-    sec_dir = d / "phase4_sections"
+    # Step 3 — sections
+    sec_dir = d / "step3_sections"
     if sec_dir.is_dir():
         sections: Dict[int, str] = {}
         for f in sorted(sec_dir.glob("section_*.md")):
@@ -144,31 +141,27 @@ def load_run_state(run_dir: str | Path) -> Dict[str, Any]:
         if sections:
             state["completed_sections"] = sections
 
-    compiled = _load_text_safe(d / "phase4_compiled_en.md")
+    es = _load_text_safe(d / "step3_executive_summary.md")
+    if es is not None:
+        state["executive_summary"] = es
+
+    # Step 4
+    at = _load_text_safe(d / "step4_appendix_timeline.md")
+    if at is not None:
+        state["chronological_appendix"] = at
+
+    final = _load_text_safe(d / "step4_final.md")
+    if final is not None:
+        state["final_output"] = final
+
+    compiled = _load_text_safe(d / "step4_compiled.md")
     if compiled is not None:
         state["final_compiled"] = compiled
 
-    polished = _load_text_safe(d / "phase4_polished_en.md")
-    if polished is not None:
-        state["final_output"] = polished
-
-    # Phase 5
-    en_out = _load_text_safe(d / "phase5_output_en.md")
-    if en_out is not None:
-        state["english_output"] = en_out
-
-    nouns = _load_json_safe(d / "phase5_proper_nouns.json")
-    if nouns is not None:
-        state["proper_nouns"] = nouns
-
-    kr_out = _load_text_safe(d / "phase5_output_kr.md")
-    # kr_out is the final product; not loaded into state for resume
-
     plog("artifacts", f"loaded from {d}: "
-         f"events={len(state.get('extracted_events', []))} "
-         f"summaries={len(state.get('period_summaries', {}))} "
-         f"sections={len(state.get('completed_sections', {}))} "
-         f"english={'yes' if state.get('english_output') else 'no'}")
+         f"kb_cats={len(state.get('knowledge_base', {}))} "
+         f"temporal={len(state.get('temporal_index', []))} "
+         f"sections={len(state.get('completed_sections', {}))}")
 
     return state
 
@@ -178,8 +171,7 @@ def list_runs(base: str = "output") -> list[Path]:
     base_dir = Path(base)
     if not base_dir.is_dir():
         return []
-    runs = sorted(
+    return sorted(
         [d for d in base_dir.iterdir() if d.is_dir() and d.name[0].isdigit()],
         reverse=True,
     )
-    return runs

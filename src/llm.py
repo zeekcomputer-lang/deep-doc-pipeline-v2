@@ -58,6 +58,7 @@ LLM_MAX_CONCURRENT: int = int(os.getenv("LLM_MAX_CONCURRENT", "5"))
 # ──────────────────────────────────────────────────────────────────────────────
 _ROLE_ENV_MAP: Dict[str, str] = {
     "extractor": "EXTRACTOR_MODEL",
+    "analyzer": "ANALYZER_MODEL",
     "judge": "JUDGE_MODEL",
     "writer": "WRITER_MODEL",
 }
