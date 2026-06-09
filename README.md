@@ -1,4 +1,6 @@
-# Deep Doc Pipeline (v2.0)
+# Deep Doc Pipeline v3
+
+> **v2 → v3 아키텍처 재설계 버전.** 원본: [deep-doc-pipeline](https://github.com/zeekcomputer-lang/deep-doc-pipeline)
 
 JSONL 문서 → 영문 분석·집필 → 한국어 백서 자동 생성 파이프라인.
 LangGraph + OpenAI SDK + Pydantic 강제 출력.
