@@ -191,8 +191,10 @@ v2에서 검증된 8개 제약. v3에서도 **동일 적용**.
 
 | 필드 | 설명 | 적용 범위 |
 |------|------|----------|
-| `DOCUMENT_TITLE` | 표지 제목 고정 (비우면 LLM 자동 생성) | 최종 백서 H1 |
-| `DOCUMENT_PURPOSE` | 문서 목적 | 전 LLM 노드 |
+| `DOCUMENT_TYPE` | ★ 문서 유형 (whitepaper/executive_brief/postmortem/tech_report/status_update/custom) — 카테고리와 무관하게 목적별 구조 설계 | narrative_planner |
+| `DOCUMENT_TYPE_CUSTOM_STRUCTURE` | custom 유형일 때 직접 지정하는 섹션 구성 | narrative_planner |
+| `DOCUMENT_TITLE` | 표지 제목 고정 (비우면 LLM 자동 생성) | 최종 문서 H1 |
+| `DOCUMENT_PURPOSE` | 문서 목적 (비우면 유형별 기본값) | 전 LLM 노드 |
 | `DOMAIN_KNOWLEDGE` | ★ LLM이 모르는 도메인 지식·단계·주의사항 | 전 LLM 노드(추출·분석·집필) |
 | `KEY_TERMS` | 용어집 {용어: 정의} | 전 LLM 노드 |
 | `INCLUDE_TEMPORAL_CONTEXT` | 시점(날짜) 참고 정보 제공 — 날짜를 참고용으로 제공, 서술에 도움 될 때만 반영(강제 아님, 기본 True) | 분석·집필 |

@@ -51,6 +51,8 @@ from .prompt_config import (
     get_writing_context,
     get_proper_noun_guard,
     get_document_title,
+    get_document_structure_directive,
+    get_document_type,
 )
 from .utils import (
     CATEGORIES,
@@ -443,17 +445,19 @@ def _merge_category_analysis(
 # ── 2-2  narrative_planner ───────────────────────────────────
 
 _NARRATIVE_SYSTEM = """\
-당신은 수석 비즈니스 분석가입니다.
-4개 카테고리 분석 결과와 시간순 데이터를 종합하여 경영진용 비즈니스 백서를 설계하십시오.
+당신은 수석 비즈니스 분석가이자 문서 설계자입니다.
+카테고리별로 분류·정리된 지식을 베이스로, 문서 목적에 맞는 적절한 구조의 문서를 설계하십시오.
 
 다음 4가지를 모두 산출하십시오:
-1. document_title: 백서 표지 제목 (프로젝트 핵심 주제를 담은 전문적인 한 줄 제목)
-2. storyline: 프로젝트를 관통하는 서사 흐름 — 초기 문제 인식 → 핵심 의사결정 → 창출 가치 → 교훈
-3. section_plan: 본문 섹션 기획 (2~4개). 각 섹션에 category_refs와 intent 명시
+1. document_title: 문서 제목 (핵심 주제를 담은 전문적인 한 줄 제목)
+2. storyline: 문서를 관통하는 서사 흐름 — 문제 인식 → 핵심 의사결정 → 창출 가치 → 교훈
+3. section_plan: 본문 섹션 기획. 각 섹션에 category_refs(참조할 카테고리, 복수 가능)와 intent 명시
 4. key_implications: 문서 마지막 '시사점' 섹션에 들어갈 핵심 제언 3~5개 (향후 방향·권고 중심)
 
-단순한 시간적 나열을 배제하고, 비즈니스 임팩트와 인사이트 중심으로 구성하십시오.
-본문은 1~2페이지 분량의 고압축 백서입니다. 섹션 수는 2~4개로 제한하십시오.
+설계 원칙:
+- 섹션은 '주제' 단위로 설계하며, 카테고리 경계를 그대로 따르지 않습니다. 필요한 지식을 여러 카테고리에서 끌어와 종합하십시오.
+- 단순한 시간적 나열을 배제하고, 비즈니스 임팩트와 인사이트 중심으로 구성하십시오.
+- 섹션 수·형태는 아래 '문서 유형과 구조 설계' 지침을 따르십시오.
 """
 
 
@@ -468,13 +472,18 @@ def narrative_planner_node(state: GraphState) -> dict:
     temporal_index = state.get("temporal_index", [])
     narrative_feedback = state.get("narrative_feedback", "")
 
-    sys_prompt = _NARRATIVE_SYSTEM + get_analysis_context() + get_proper_noun_guard()
+    sys_prompt = (
+        _NARRATIVE_SYSTEM
+        + get_document_structure_directive()
+        + get_analysis_context()
+        + get_proper_noun_guard()
+    )
 
-    # Build analysis summary block
+    # Build knowledge-source block (카테고리는 지식 분류 축 — 섹션 경계가 아님)
     analyses_block = []
     for cat in CATEGORIES:
         text = category_analyses.get(cat, f"('{cat}' 분석 미완료)")
-        analyses_block.append(f"## {cat}\n{text}")
+        analyses_block.append(f"### [지식 분류: {cat}]\n{text}")
     analyses_text = "\n\n".join(analyses_block)
 
     # Build temporal summary (top events only to save budget)
@@ -484,9 +493,9 @@ def narrative_planner_node(state: GraphState) -> dict:
         temporal_summary += f"\n... (외 {len(dated_items) - 30}건)"
 
     user_content = (
-        "## 카테고리별 분석 결과\n\n"
+        "## 카테고리별 분류된 지식 (섹션 설계의 소재 — 이 분류를 그대로 섹션으로 만들지 마십시오)\n\n"
         f"{analyses_text}\n\n"
-        "## 시간순 주요 이벤트\n\n"
+        "## 시간순 주요 이벤트 (참고용)\n\n"
         f"{temporal_summary}"
     )
 
@@ -519,7 +528,7 @@ def narrative_planner_node(state: GraphState) -> dict:
 
     plog(
         "narrative_planner",
-        f"서사 흐름 설계 완료: {len(result.section_plan)}개 섹션, "
+        f"[{get_document_type()}] 설계 완료: {len(result.section_plan)}개 섹션, "
         f"시사점 {len(result.key_implications)}건 | 제목='{title}'",
     )
 
@@ -675,14 +684,15 @@ def init_writing_node(state: GraphState) -> dict:
 
 _WRITER_SYSTEM_TEMPLATE = """\
 당신은 수석 비즈니스 라이터입니다.
-아래 데이터를 바탕으로 Executive Summary의 한 섹션을 집필하십시오.
+아래 지식을 바탕으로 문서의 한 섹션을 집필하십시오.
 
-섹션: {title}
+섹션 주제: {title}
 핵심 메시지: {intent}
 
 [작성 지침]
+- 이 섹션은 '주제' 단위입니다. 아래 제공된 지식(여러 카테고리에서 취합)을 주제에 맞게 종합·재구성하여 서술하십시오.
+- 카테고리별로 나열하지 말고, 주제를 중심으로 인과관계와 시사점이 드러나도록 서술
 - 비즈니스 임팩트와 인사이트 중심의 전문적인 톤앤매너를 유지
-- 단순한 이벤트 나열이 아닌, 인과관계와 시사점이 드러나도록 서술
 - 2-3 문단, 고압축
 
 [⚠ 출력 형식 — 반드시 준수]

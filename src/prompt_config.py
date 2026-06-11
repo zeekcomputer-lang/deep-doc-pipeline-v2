@@ -34,9 +34,30 @@ DOCUMENT_TITLE: str = ""
 
 
 # ════════════════════════════════════════════════════════════════
+# 0-B. ★ 문서 유형 (Document Type) — 산출물 형태 선택
+# ════════════════════════════════════════════════════════════════
+# 지식 베이스(4개 카테고리로 분류된 지식)를 베이스로, 어떤 형태의 문서를
+# 생성할지 선택합니다. 카테고리는 '지식 분류 축'일 뿐, 문서의 섹션 구조와
+# 1:1로 대응하지 않습니다. 각 유형은 목적에 맞는 고유한 섹션 구성을 갖습니다.
+#
+# 지원 유형 (키 지정):
+#   "whitepaper"      : 경영진 비즈니스 백서 (기본). 문제→결정→가치→교훈 서사
+#   "executive_brief" : 1페이지 임원 요약보고서 (핵심만 압축)
+#   "postmortem"      : 장애/회고 보고서 (타임라인·원인·조치·재발방지)
+#   "tech_report"     : 기술 현황 보고서 (아키텍처·의사결정·리스크 중심)
+#   "status_update"   : 이해관계자 진행 업데이트 (성과·진행·이슈·다음 단계)
+#   "custom"          : DOCUMENT_TYPE_CUSTOM_STRUCTURE 에 직접 구조 지정
+DOCUMENT_TYPE: str = "whitepaper"
+
+# DOCUMENT_TYPE="custom" 일 때만 사용. 원하는 섹션 구성·흐름을 자유롭게 서술.
+DOCUMENT_TYPE_CUSTOM_STRUCTURE: str = ""
+
+
+# ════════════════════════════════════════════════════════════════
 # 1. 문서 목적 (Document Purpose)
 # ════════════════════════════════════════════════════════════════
-DOCUMENT_PURPOSE: str = "프로젝트 수행 경과와 성과를 경영진에게 보고하는 비즈니스 백서"
+# 비워두면("") DOCUMENT_TYPE에 따른 기본 목적이 사용됩니다.
+DOCUMENT_PURPOSE: str = ""
 
 
 # ════════════════════════════════════════════════════════════════
@@ -161,6 +182,85 @@ def get_domain_knowledge() -> str:
     return _build_domain_block()
 
 
+# ──────────────────────────────────────────────────────────────
+# 문서 유형별 구조 지침 (Document Type Strategy)
+# ──────────────────────────────────────────────────────────────
+# 각 문서 유형의 (기본 목적, 구조 지침). 구조 지침은 narrative_planner에 주입되어
+# 카테고리 경계가 아닌 '문서 목적'에 맞는 섹션 구성을 설계하도록 유도한다.
+_DOCUMENT_TYPE_PROFILES: dict[str, tuple[str, str]] = {
+    "whitepaper": (
+        "프로젝트 수행 경과와 성과를 경영진에게 보고하는 비즈니스 백서",
+        "문제 인식 → 핵심 의사결정 → 창출 가치 → 교훈의 서사 흐름. "
+        "서사 단계별로 섹션을 구성하되, 여러 카테고리의 지식을 가로지르며 종합하십시오. "
+        "섹션 2~4개, 1~2페이지 고압축.",
+    ),
+    "executive_brief": (
+        "핵심 의사결정과 성과만 압축한 1페이지 임원 요약보고서",
+        "한눈에 핵심을 파악하는 극도로 압축된 구조. "
+        "'핵심 요약', '주요 성과/결정', '리스크와 대응' 수준의 1~2개 섹션으로 최소화. "
+        "각 섹션은 카테고리를 가로지르는 종합 관점으로 서술.",
+    ),
+    "postmortem": (
+        "장애·이슈 대응 경과를 돌아보는 회고(포스트모텀) 보고서",
+        "'상황 요약', '근본 원인', '대응과 조치', '재발 방지 대책' 성격의 섹션으로 구성. "
+        "원인·대응은 여러 카테고리(리스크·아키텍처·교훈)의 지식을 종합해 인과적으로 서술.",
+    ),
+    "tech_report": (
+        "아키텍처·기술 의사결정과 리스크를 정리한 기술 현황 보고서",
+        "'기술 개요', '주요 아키텍처 결정', '기술적 리스크와 대응', '기술 부채·교훈' 구성. "
+        "기술 주제별로 섹션을 나누되, 관련 카테고리 지식을 주제 중심으로 재구성.",
+    ),
+    "status_update": (
+        "이해관계자에게 진행 상황을 공유하는 진행 업데이트",
+        "'주요 진척·성과', '현재 이슈·리스크', '다음 단계 계획' 성격의 섹션으로 구성. "
+        "시점별 진행을 여러 카테고리를 가로지르며 종합적으로 정리.",
+    ),
+}
+
+
+def get_document_type() -> str:
+    """현재 문서 유형 키 (소문자 정규화)."""
+    return (DOCUMENT_TYPE or "whitepaper").strip().lower()
+
+
+def get_effective_purpose() -> str:
+    """문서 목적 — DOCUMENT_PURPOSE 명시값 우선, 없으면 유형별 기본값."""
+    if DOCUMENT_PURPOSE and DOCUMENT_PURPOSE.strip():
+        return DOCUMENT_PURPOSE.strip()
+    dtype = get_document_type()
+    profile = _DOCUMENT_TYPE_PROFILES.get(dtype)
+    return profile[0] if profile else "프로젝트 지식 기반 보고서"
+
+
+def get_document_structure_directive() -> str:
+    """narrative_planner에 주입할 문서 유형별 구조 지침.
+
+    핵심: 카테고리는 지식 분류 축일 뿐, 문서 섹션과 1:1로 대응하지 않는다는 점을 명시.
+    """
+    dtype = get_document_type()
+
+    if dtype == "custom" and DOCUMENT_TYPE_CUSTOM_STRUCTURE.strip():
+        structure = DOCUMENT_TYPE_CUSTOM_STRUCTURE.strip()
+        type_label = "사용자 정의 문서"
+    else:
+        profile = _DOCUMENT_TYPE_PROFILES.get(dtype, _DOCUMENT_TYPE_PROFILES["whitepaper"])
+        structure = profile[1]
+        type_label = dtype
+
+    return (
+        "\n\n[문서 유형과 구조 설계]\n"
+        f"문서 유형: {type_label}\n"
+        f"구조 지침: {structure}\n"
+        "\n[★ 카테고리와 섹션의 관계 — 반드시 준수]\n"
+        "입력으로 주어진 4개 카테고리(Architecture_and_Tech, Risk_and_Troubleshooting, "
+        "Business_and_Feature, Lessons_Learned)는 지식을 정리한 '분류 축'일 뿐입니다.\n"
+        "— 문서의 섹션을 카테고리와 1:1로 만들지 마십시오. (예: '아키텍처', '리스크' 식으로 카테고리명을 그대로 섹션 제목으로 쓰지 않음)\n"
+        "— 각 섹션은 문서 목적에 맞는 '주제'로 정의하고, 필요한 카테고리의 지식을 여러 개 가로지르며(cross-cutting) 끌어와 서술하십시오.\n"
+        "— 하나의 섹션이 여러 카테고리를 참조할 수 있고, 하나의 카테고리가 여러 섹션에 기여할 수도 있습니다.\n"
+        "— 섹션의 category_refs에는 그 섹션 서술에 실제로 필요한 카테고리를 (복수 가능) 명시하십시오.\n"
+    )
+
+
 # 시점 참고 정보 텍스트 (강제 아님 — 단순 참조용)
 _TEMPORAL_DIRECTIVE: str = (
     "[시점 참고 정보]\n"
@@ -193,8 +293,10 @@ def _build_context_block(
     """노드 프롬프트에 주입할 사용자 컨텍스트 블록 생성 (한국어)."""
     parts: list[str] = []
 
-    if include_purpose and DOCUMENT_PURPOSE:
-        parts.append(f"[문서 목적] {DOCUMENT_PURPOSE}")
+    if include_purpose:
+        eff_purpose = get_effective_purpose()
+        if eff_purpose:
+            parts.append(f"[문서 목적] {eff_purpose}")
 
     if include_tone and TONE_DIRECTIVE:
         parts.append(

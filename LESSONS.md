@@ -22,6 +22,7 @@
 > | L-025 | 프롬프트 | 시점 참고 정보: 날짜는 참고용으로만 제공, 포함은 선택(강제 아님) + 환각 방지 |
 > | L-026 | 산출 | 기능 추가는 "독립 출력 단계"로 — 기존 파이프라인/그래프 불변, post-invoke 단계로만 추가 (고유명사 JSON) |
 > | L-027 | 윤문 | 섹션별 polish 시 헤딩을 LLM에 보내면 제목이 소실된다 — 헤딩/본문 분리 후 본문만 윤문, 헤딩은 결정론적 복원 |
+> | L-028 | 아키텍처 | 카테고리=지식 분류 축, 섹션=목적별 주제 — 1:1 결합 해제 + DOCUMENT_TYPE으로 다양한 문서 생성 |
 
 ## 인덱스
 
@@ -435,6 +436,25 @@ v1.5 translate_node에서 영문 20,000단어 → 한글 6,000단어로 소실 (
 > 구조 요소(헤딩·제목·메타)는 결정론적 코드가 소유하고, LLM에는 변형해도 되는 부분(본문)만 넘긴다. 구조를 LLM 입출력에 내맡기면 소실·변형·중복이 생긴다. (L-024 제목 중복과 쌍둥이 — 조립기/LLM 책임 경계 분리.)
 
 **적용:** `utils.split_heading_body`, `nodes.polish_node`(헤딩/본문 분리 윤문 + 헤딩 복원)
+
+---
+
+## L-028: 카테고리는 지식 분류 축, 섹션은 목적별 주제 — 둘을 분리하라
+
+**증상:** 출력 문서의 단락이 4개 카테고리(아키텍처/리스크/비즈니스/교훈)와 동일한 수준·순서로 고정됨. 문서가 '카테고리 나열'처럼 보임.
+
+**근본 원인:** narrative_planner가 (1) 카테고리 분석을 `## Architecture_and_Tech` 헤더 그대로 노출해 LLM이 카테고리당 섹션을 만들게 유도, (2) section_writer가 category_refs 단위로만 집필 → 섹션=카테고리로 굳음. 근본적으로 카테고리(지식 분류)와 섹션(문서 구조)의 관계를 분리하는 설계 원칙이 없었다.
+
+**해결:**
+1. **설계 원칙 명시:** `get_document_structure_directive()`가 narrative_planner에 "카테고리는 분류 축일 뿐, 섹션과 1:1 금지, 주제 중심으로 카테고리를 가로지르며(cross-cutting) 설계하라" 주입.
+2. **지식 '소재'로 명시:** 카테고리 분석을 `### [지식 분류: ...]`로 표기해 섹션 템플릿이 아니라 소재임을 표시.
+3. **문서 유형(DOCUMENT_TYPE):** 동일 지식 베이스에서 whitepaper/executive_brief/postmortem/tech_report/status_update/custom 선택. 각 유형은 목적별 고유 섹션 구성.
+4. **section_writer 톤 조정:** "카테고리별 나열 금지, 주제 중심 종합·재구성".
+
+**원칙:**
+> 분류 체계(지식을 어떻게 저장하는가)와 제시 구조(문서를 어떻게 구성하는가)는 별개 설계 축이다. 저장 축을 그대로 출력 구조로 쓰면 문서가 '데이터 덤프'가 된다. 지식은 인덱스(분류)로 쌓고, 문서는 목적별 주제로 그 인덱스를 가로지르며 재구성한다.
+
+**적용:** `prompt_config`(DOCUMENT_TYPE/_DOCUMENT_TYPE_PROFILES/get_document_structure_directive/get_effective_purpose), `nodes.narrative_planner`(구조 지침 주입 + 지식 소재 표기), `nodes.section_writer`(주제 중심 톤), `schemas.SectionPlanItem`(docstring)
 
 ---
 

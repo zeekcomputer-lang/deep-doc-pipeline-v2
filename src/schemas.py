@@ -54,10 +54,10 @@ class CategoryAnalysis(BaseModel):
 
 
 class SectionPlanItem(BaseModel):
-    """Executive Summary 섹션 기획 항목."""
-    title: str = Field(..., description="섹션 제목 (한국어)")
+    """문서 본문 섹션 기획 항목 (주제 단위 — 카테고리 경계와 무관)."""
+    title: str = Field(..., description="섹션 제목 (주제 기반, 한국어). 카테고리명을 그대로 쓰지 말 것")
     category_refs: List[str] = Field(
-        ..., description="참조할 카테고리 목록 (1개 이상)",
+        ..., description="이 섹션 서술에 필요한 카테고리(지식 소스) 목록 (1개 이상, 복수 권장)",
     )
     intent: str = Field(..., description="섹션의 핵심 메시지 (1문장, 한국어)")
 
