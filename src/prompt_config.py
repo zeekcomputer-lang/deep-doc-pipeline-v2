@@ -63,16 +63,17 @@ CUSTOM_DIRECTIVES: str = ""
 
 
 # ════════════════════════════════════════════════════════════════
-# 4-B. 시점(날짜) 본문 반영 (Temporal Anchoring)
+# 4-B. 시점(날짜) 참조 정보 제공 (Temporal Reference)
 # ════════════════════════════════════════════════════════════════
-# True이면, 데이터에 날짜 단서(date_hint)가 있는 사안은 본문 서술에
-# 시점(예: "2026년 2월", "2분기 초")을 자연스럽게 포함하도록 LLM에 지시합니다.
+# True이면, 데이터의 날짜 단서(date_hint)를 참고 정보로 제공하고,
+# 서술의 자연스러움을 돕는 경우에만 시점을 포함하도록 LLM에 안내합니다.
+# 시점 포함은 강제가 아니며(선택 사항), 인사이트 전달이 우선입니다.
 # 날짜 단서가 없는 사안은 시점을 지어내지 않습니다(환각 방지).
 #
-# - True  : 시점이 있는 사안은 "언제" 일어났는지 본문에 명시 (분석·집필 단계)
-# - False : 시점 표기를 강제하지 않음 (인사이트 중심 서술)
+# - True  : 날짜를 참고 정보로 제공, 필요한 경우에만 본문에 자연스럽게 반영 (기본)
+# - False : 시점 안내를 주입하지 않음 (인사이트 중심 서술)
 # 월별 상세 타임라인 '부록'과는 별개입니다. 부록은 v3.1에서 제거되었고,
-# 이 옵션은 본문 서술에 시점을 녹이는 기능입니다.
+# 이 옵션은 날짜를 참고 정보로 제공하는 기능입니다(강제 아님).
 INCLUDE_TEMPORAL_CONTEXT: bool = True
 
 
@@ -160,23 +161,24 @@ def get_domain_knowledge() -> str:
     return _build_domain_block()
 
 
-# 시점 본문 반영 지시 텍스트
+# 시점 참고 정보 텍스트 (강제 아님 — 단순 참조용)
 _TEMPORAL_DIRECTIVE: str = (
-    "[시점 서술 규칙]\n"
-    "각 사안의 앞에 표시된 날짜([YYYY-MM-DD] 또는 [YYYY-MM])는 실제 발생 시점입니다.\n"
-    "날짜 단서가 있는 사안은 본문 서술에 시점을 자연스럽게 포함하십시오 "
-    "(예: '2026년 2월', '2분기 초', '도입 초기'). 시간적 선후 관계가 드러나도록 서술합니다.\n"
-    "단, 단순 나열이 아닌 인과·맥락 속에 녹이십시오. 날짜 단서가 없는 사안은 시점을 임의로 지어내지 마십시오.\n"
+    "[시점 참고 정보]\n"
+    "각 사안의 앞에 표시된 날짜([YYYY-MM-DD] 또는 [YYYY-MM])는 실제 발생 시점으로, 참고용 정보입니다.\n"
+    "서술의 자연스러움이나 시간적 선후 관계를 드러내는 데 도움이 되는 경우에만 "
+    "본문에 시점(예: '2026년 2월', '도입 초기')을 자연스럽게 포함할 수 있습니다.\n"
+    "시점 포함은 필수가 아니며, 비즈니스 인사이트 전달이 우선입니다. 불필요하면 생략해도 됩니다.\n"
+    "단, 날짜 단서가 없는 사안은 시점을 임의로 지어내지 마십시오.\n"
 )
 
 
 def _build_temporal_block() -> str:
-    """시점 본문 반영 지시 블록 (INCLUDE_TEMPORAL_CONTEXT=True일 때만)."""
+    """시점 참고 정보 블록 (INCLUDE_TEMPORAL_CONTEXT=True일 때만). 강제 아님."""
     return ("\n\n" + _TEMPORAL_DIRECTIVE) if INCLUDE_TEMPORAL_CONTEXT else ""
 
 
 def get_temporal_directive() -> str:
-    """시점 지시 텍스트 (독립 조회용)."""
+    """시점 참고 정보 텍스트 (독립 조회용)."""
     return _build_temporal_block()
 
 
@@ -231,7 +233,7 @@ def get_extraction_context() -> str:
 
 
 def get_analysis_context() -> str:
-    """Step 2 분석용 (category_analyzer, narrative_planner). PURPOSE + TONE + 사전지식 + 시점."""
+    """Step 2 분석용 (category_analyzer, narrative_planner). PURPOSE + TONE + 사전지식 + 시점 참고."""
     return _build_context_block(
         include_purpose=True, include_tone=True,
         include_audience=False, include_custom=False,
@@ -240,7 +242,7 @@ def get_analysis_context() -> str:
 
 
 def get_writing_context() -> str:
-    """Step 3 집필용 (section_writer). 전체 항목 + 사전지식 + 시점."""
+    """Step 3 집필용 (section_writer). 전체 항목 + 사전지식 + 시점 참고."""
     return _build_context_block(
         include_purpose=True, include_tone=True,
         include_audience=True, include_custom=True,

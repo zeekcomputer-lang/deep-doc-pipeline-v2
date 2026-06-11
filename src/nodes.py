@@ -65,6 +65,7 @@ from .utils import (
     compile_whitepaper,
     dedup_adjacent_headings,
     split_by_section,
+    split_heading_body,
     export_knowledge_base,
 )
 from .logger import plog, psub, log_error
@@ -897,15 +898,26 @@ def polish_node(state: GraphState) -> dict:
     polished_parts: List[str] = [header]
 
     for si, section_text in enumerate(sections):
-        section_bytes = measure_text_bytes(section_text)
+        # 헤딩과 본문 분리 — 헤딩은 LLM에 보내지 않고 결정론적으로 보존
+        heading, body = split_heading_body(section_text)
 
-        # Skip very short sections (likely just a heading)
-        if section_bytes < 50:
+        if not body.strip():
+            # 본문이 없는 섹션(헤딩만) — 그대로 유지
             polished_parts.append(section_text)
             continue
 
-        polished_section = _polish_single_block(sys_prompt, section_text)
-        polished_parts.append(polished_section)
+        body_bytes = measure_text_bytes(body)
+        if body_bytes < 50:
+            # 너무 짧은 본문은 윤문 생략, 헤딩+본문 그대로 유지
+            polished_parts.append(section_text)
+            continue
+
+        polished_body = _polish_single_block(sys_prompt, body)
+        # 헤딩을 결정론적으로 복원 (LLM이 제목을 누락시켜도 안전)
+        if heading:
+            polished_parts.append(f"{heading}\n\n{polished_body.lstrip()}\n")
+        else:
+            polished_parts.append(polished_body)
         psub("polish", f"섹션 {si + 1}/{len(sections)} 윤문 완료")
 
     polished = dedup_adjacent_headings("".join(polished_parts))

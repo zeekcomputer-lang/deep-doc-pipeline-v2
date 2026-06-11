@@ -195,7 +195,7 @@ v2에서 검증된 8개 제약. v3에서도 **동일 적용**.
 | `DOCUMENT_PURPOSE` | 문서 목적 | 전 LLM 노드 |
 | `DOMAIN_KNOWLEDGE` | ★ LLM이 모르는 도메인 지식·단계·주의사항 | 전 LLM 노드(추출·분석·집필) |
 | `KEY_TERMS` | 용어집 {용어: 정의} | 전 LLM 노드 |
-| `INCLUDE_TEMPORAL_CONTEXT` | 시점(날짜) 본문 반영 — 날짜 단서 있는 사안은 본문에 시점 명시 (기본 True) | 분석·집필 |
+| `INCLUDE_TEMPORAL_CONTEXT` | 시점(날짜) 참고 정보 제공 — 날짜를 참고용으로 제공, 서술에 도움 될 때만 반영(강제 아님, 기본 True) | 분석·집필 |
 | `TONE_DIRECTIVE` | 톤 지시 | 분석·집필 |
 | `TARGET_AUDIENCE` | 대상 독자 | 집필 |
 | `CUSTOM_DIRECTIVES` | 추가 지시 | 집필(section_writer) |

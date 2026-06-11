@@ -298,6 +298,27 @@ def compile_whitepaper(
 _SECTION_RE = re.compile(r"(?=\n## )")
 
 
+def split_heading_body(section_text: str) -> Tuple[str, str]:
+    """섹션 텍스트를 (헤딩 라인, 본문)으로 분리.
+
+    섹션이 '## 제목\n\n본문' 형태일 때 첫 헤딩 라인을 떼어낸다.
+    헤딩이 없으면 ('', 원문) 반환. polish가 헤딩을 LLM에 보내지 않고
+    본문만 윤문한 뒤 헤딩을 결정론적으로 복원하기 위해 사용한다.
+    """
+    if not section_text:
+        return "", section_text
+    # 선행 공백/개행 보존을 위해 lstrip 전 첫 비빈 라인처리
+    stripped = section_text.lstrip('\n')
+    lead_newlines = section_text[:len(section_text) - len(stripped)]
+    lines = stripped.split('\n')
+    m = _HEADING_LINE_RE.match(lines[0]) if lines else None
+    if m:
+        heading = lead_newlines + lines[0]
+        body = '\n'.join(lines[1:])
+        return heading, body
+    return "", section_text
+
+
 def split_by_section(compiled: str) -> Tuple[str, List[str]]:
     """Split compiled document into (header, sections).
 
