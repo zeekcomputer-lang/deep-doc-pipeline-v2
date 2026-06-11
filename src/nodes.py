@@ -450,14 +450,14 @@ _NARRATIVE_SYSTEM = """\
 
 다음 4가지를 모두 산출하십시오:
 1. document_title: 문서 제목 (핵심 주제를 담은 전문적인 한 줄 제목)
-2. storyline: 문서를 관통하는 서사 흐름 — 문제 인식 → 핵심 의사결정 → 창출 가치 → 교훈
-3. section_plan: 본문 섹션 기획. 각 섹션에 category_refs(참조할 카테고리, 복수 가능)와 intent 명시
-4. key_implications: 문서 마지막 '시사점' 섹션에 들어갈 핵심 제언 3~5개 (향후 방향·권고 중심)
+2. storyline: 문서를 관통하는 서사 흐름 (문제 인식 → 핵심 의사결정 → 창출 가치 → 교훈은 권장 흐름이며, 문서 유형에 맞게 조정 가능)
+3. section_plan: 본문 섹션 기획. 각 섹션에 category_refs(참조할 카테고리, 복수 가능), intent, (선택)subsections 명시
+4. key_implications: 문서 마지막 '시사점' 섹션에 들어갈 핵심 제언 (향후 방향·권고 중심, 개수는 내용에 맞게 자율 결정)
 
 설계 원칙:
 - 섹션은 '주제' 단위로 설계하며, 카테고리 경계를 그대로 따르지 않습니다. 필요한 지식을 여러 카테고리에서 끌어와 종합하십시오.
 - 단순한 시간적 나열을 배제하고, 비즈니스 임팩트와 인사이트 중심으로 구성하십시오.
-- 섹션 수·형태는 아래 '문서 유형과 구조 설계' 지침을 따르십시오.
+- 섹션의 수·깊이·순서는 당신이 능동적으로 설계합니다. 아래 '문서 유형과 구조 설계' 지침은 권장 방향일 뿐, 내용을 가장 잘 전달할 구조를 스스로 판단하십시오.
 """
 
 
@@ -688,18 +688,30 @@ _WRITER_SYSTEM_TEMPLATE = """\
 
 섹션 주제: {title}
 핵심 메시지: {intent}
-
+{subsection_directive}
 [작성 지침]
 - 이 섹션은 '주제' 단위입니다. 아래 제공된 지식(여러 카테고리에서 취합)을 주제에 맞게 종합·재구성하여 서술하십시오.
 - 카테고리별로 나열하지 말고, 주제를 중심으로 인과관계와 시사점이 드러나도록 서술
 - 비즈니스 임팩트와 인사이트 중심의 전문적인 톤앤매너를 유지
-- 2-3 문단, 고압축
+- 분량은 내용의 풍부함에 맞게 능동적으로 조절 (고압축 지향, 보통 2-4 문단)
 
 [⚠ 출력 형식 — 반드시 준수]
-- **섹션 제목을 출력에 포함하지 마십시오.** 제목('{title}')은 시스템이 별도로 붙입니다.
-- '#', '##', '###' 등 어떤 마크다운 헤딩도 쓰지 마십시오. 순수 본문 문단만 작성합니다.
+- **섹션 제목(최상위 제목)을 출력에 포함하지 마십시오.** 제목('{title}')은 시스템이 별도로 붙입니다.
+- '#', '##' 헤딩은 쓰지 마십시오. (소제목은 아래 지침을 따릅니다.)
 - 다른 섹션 제목이나 '시사점' 제목을 미리 쓰지 마십시오. 오직 이 섹션의 본문만 출력합니다.
 """
+
+# subsections가 있을 때 주입할 지침
+_SUBSECTION_DIRECTIVE = """\
+이 섹션은 다음 소제목으로 세분됩니다 (각 소제목을 '### 소제목' 마크다운 형식으로 쓰고 그 아래 본문을 작성):
+{subsections}
+각 소제목 아래에 해당 내용을 서술하되, 소제목 간 흐름이 자연스럽게 이어지도록 하십시오.
+"""
+
+# subsections가 없을 때 주입할 지침
+_NO_SUBSECTION_DIRECTIVE = (
+    "'###' 등 어떤 마크다운 헤딩도 쓰지 마십시오. 순수 본문 문단만 작성합니다."
+)
 
 
 @retry_on_504
@@ -721,6 +733,7 @@ def section_writer_node(state: GraphState) -> dict:
     title = section.get("title", f"섹션 {idx}")
     intent = section.get("intent", "")
     category_refs = section.get("category_refs", [])
+    subsections = [s for s in section.get("subsections", []) if s and s.strip()]
 
     # Gather relevant entries from referenced categories
     relevant_entries: List[Dict] = []
@@ -728,8 +741,19 @@ def section_writer_node(state: GraphState) -> dict:
         cat = normalize_category(ref)
         relevant_entries.extend(kb.get(cat, []))
 
+    # subsections 유무에 따라 소제목 지침을 동적 구성
+    if subsections:
+        subsection_directive = "\n" + _SUBSECTION_DIRECTIVE.format(
+            subsections="\n".join(f"- {s}" for s in subsections)
+        )
+    else:
+        subsection_directive = "\n" + _NO_SUBSECTION_DIRECTIVE
+
     sys_prompt = (
-        _WRITER_SYSTEM_TEMPLATE.format(title=title, intent=intent)
+        _WRITER_SYSTEM_TEMPLATE.format(
+            title=title, intent=intent,
+            subsection_directive=subsection_directive,
+        )
         + get_writing_context()
         + get_proper_noun_guard()
     )
@@ -774,7 +798,8 @@ def section_writer_node(state: GraphState) -> dict:
     plog(
         "section_writer",
         f"섹션 [{idx}] '{title}' 집필 완료 "
-        f"({measure_text_bytes(result.content)}B)",
+        f"({measure_text_bytes(result.content)}B"
+        + (f", 소제목 {len(subsections)}개" if subsections else "") + ")",
     )
 
     return {"current_draft": result.content}

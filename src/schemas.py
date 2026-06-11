@@ -60,6 +60,14 @@ class SectionPlanItem(BaseModel):
         ..., description="이 섹션 서술에 필요한 카테고리(지식 소스) 목록 (1개 이상, 복수 권장)",
     )
     intent: str = Field(..., description="섹션의 핵심 메시지 (1문장, 한국어)")
+    subsections: List[str] = Field(
+        default_factory=list,
+        description=(
+            "(선택) 이 섹션을 세분할 소제목 목록 (한국어). "
+            "내용이 풍부해 하나의 섹션을 여러 문단으로 나눌 필요가 있을 때만 사용. "
+            "단순한 섹션은 빈 목록([])으로 두면 됨. 소제목 수는 LLM이 내용에 맞게 자율 결정."
+        ),
+    )
 
 
 class NarrativeFlow(BaseModel):
@@ -79,7 +87,11 @@ class NarrativeFlow(BaseModel):
         ),
     )
     section_plan: List[SectionPlanItem] = Field(
-        ..., description="본문 섹션 목록 (순서대로, 2~4개 권장)",
+        ...,
+        description=(
+            "본문 섹션 목록 (순서대로). 섹션 수는 문서 유형과 내용의 풍부함에 맞게 "
+            "LLM이 능동적으로 결정. 고정된 수가 아니며, 각 섹션은 독립된 주제를 다루어야 함."
+        ),
     )
     key_implications: List[str] = Field(
         default_factory=list,

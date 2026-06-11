@@ -23,6 +23,7 @@
 > | L-026 | 산출 | 기능 추가는 "독립 출력 단계"로 — 기존 파이프라인/그래프 불변, post-invoke 단계로만 추가 (고유명사 JSON) |
 > | L-027 | 윤문 | 섹션별 polish 시 헤딩을 LLM에 보내면 제목이 소실된다 — 헤딩/본문 분리 후 본문만 윤문, 헤딩은 결정론적 복원 |
 > | L-028 | 아키텍처 | 카테고리=지식 분류 축, 섹션=목적별 주제 — 1:1 결합 해제 + DOCUMENT_TYPE으로 다양한 문서 생성 |
+> | L-029 | 설계 | 고정 섹션 수(2~4)는 LLM 능동성을 막는다 — 권장(가벀)으로 완화 + subsections로 2단계 구조 허용 |
 
 ## 인덱스
 
@@ -455,6 +456,24 @@ v1.5 translate_node에서 영문 20,000단어 → 한글 6,000단어로 소실 (
 > 분류 체계(지식을 어떻게 저장하는가)와 제시 구조(문서를 어떻게 구성하는가)는 별개 설계 축이다. 저장 축을 그대로 출력 구조로 쓰면 문서가 '데이터 덤프'가 된다. 지식은 인덱스(분류)로 쌓고, 문서는 목적별 주제로 그 인덱스를 가로지르며 재구성한다.
 
 **적용:** `prompt_config`(DOCUMENT_TYPE/_DOCUMENT_TYPE_PROFILES/get_document_structure_directive/get_effective_purpose), `nodes.narrative_planner`(구조 지침 주입 + 지식 소재 표기), `nodes.section_writer`(주제 중심 톤), `schemas.SectionPlanItem`(docstring)
+
+---
+
+## L-029: 고정 섹션 수는 LLM의 능동적 문단 설계를 막는다
+
+**증상:** 문단 구성이 경직됨. 내용이 풍부해도 섹션이 늘지 않고, 단순해도 줄지 않음.
+
+**근본 원인:** 섹션 수가 "2~4개"로 schemas·prompt_config·nodes 3곳에 하드코딩됨. 또한 각 섹션이 단일 레벨(`##`)만 가능해 내부 구조를 가질 수 없었다 — LLM이 분량·구조를 조절할 여지가 없음.
+
+**해결:**
+1. **섹션 수 가벀화:** 고정 수 제거. 유형별 권장은 '참고(보통 N개)'로 표기하고 "내용의 풍부함에 맞게 능동 결정"을 명시.
+2. **2단계 구조:** `SectionPlanItem.subsections`(선택) 추가. LLM이 풍부한 섹션을 `### 소제목`으로 세분 가능. section_writer가 subsections 유무에 따라 `###` 허용/금지를 동적 지시.
+3. **기존 헤딩 로직 호환:** strip_section_title/split_heading_body는 최상위 `##`만 처리, `###`는 본문으로 취급해 소제목 보존 (L-024/L-027과 충돌 없음).
+
+**원칙:**
+> '적절한 구조'는 내용에 따라 달라진다. 구조를 스키마·프롬프트에 상수로 박아두면 LLM이 내용에 맞춰 설계할 여지가 사라진다. 제약은 '강제'가 아닌 '권장(참고)'으로 주고, 최종 판단은 LLM에 위임하되, 결정론적 후처리(헤딩 보존)로 안전망을 친다.
+
+**적용:** `schemas.SectionPlanItem.subsections`·`NarrativeFlow.section_plan`(수 제약 제거), `prompt_config`(유형별 권장·능동 설계 원칙), `nodes.narrative_planner`·`section_writer`(subsections 동적 지침)
 
 ---
 

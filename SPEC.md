@@ -48,6 +48,15 @@
 - **전략:** 카테고리별 지식을 '소재'로 제공하고, 섹션은 문서 목적에 맞는 '주제' 단위로 설계한다. 하나의 섹션이 여러 카테고리를 가로지르고(cross-cutting), 하나의 카테고리가 여러 섹션에 기여한다.
 - **문서 유형(DOCUMENT_TYPE):** 동일한 지식 베이스에서 유형만 바꿔 다양한 문서 생성. `whitepaper` / `executive_brief` / `postmortem` / `tech_report` / `status_update` / `custom`. 각 유형은 목적에 맞는 고유한 섹션 구성을 갖는다.
 - **구현:** `prompt_config.get_document_structure_directive()`가 narrative_planner system 프롬프트에 주입되어 "카테고리명을 섹션 제목으로 쓰지 말고, 주제 중심으로 재구성하라"는 설계 원칙을 강제. 카테고리 분석은 `### [지식 분류: ...]` 형태로 '소재'임을 명시.
+
+### 1.4 LLM 능동적 문단 설계 (v3.1)
+
+> **핵심:** 섹션 수·깊이는 고정되지 않으며, LLM이 내용의 풍부함과 문서 유형에 맞게 능동적으로 결정한다.
+
+- **섹션 수 가벀:** 이전에는 "2~4개"로 고정되어 LLM이 분량에 맞게 조절할 수 없었다. 이제 유형별 권장 범위는 '참고'일 뿐, LLM이 능동 결정한다.
+- **2단계 제목 구조:** `SectionPlanItem.subsections`(선택)으로 한 섹션을 `### 소제목`으로 세분할 수 있다. 내용이 풍부한 섹션은 LLM이 소제목을 나눠 다수 문단으로 구성. 단순한 섹션은 `subsections=[]`로 순수 문단.
+- **section_writer 연동:** subsections가 있으면 `### 소제목` 생성을 허용·유도하고, 없으면 순수 문단만 작성. 기존 헤딩 보존 로직(L-024/L-027)과 호환 — 최상위 `##`만 조립기가 관리하고 `###`는 본문으로 취급.
+- **key_implications 가벀:** 시사점 개수도 고정(3~5)을 풀어 내용에 맞게 자율 결정.
 - **95KB 하드리밋**: 모든 API 호출의 메시지 페이로드가 95KB 미만. 초과 시 분할·압축.
 - **504 국부 감축**: 타임아웃 시 실패 노드만 축소(-5KB/step), 성공 후 원복. 전역 품질 저하 방지.
 - **user 메시지 불변**: LLM에 전달되는 데이터는 절대 절단하지 않음. 분할로만 해결.
@@ -122,7 +131,7 @@ class GraphState(TypedDict, total=False):
 |--------|-------------|----------|
 | `KnowledgeEntry` | 문서 1건 분류·추출 (1) | `category`, `title`, `description`, `source_ref`, `date_hint?`, `impact_level` |
 | `CategoryAnalysis` | 카테고리별 심층 분석 (2) | `category`, `key_findings[]`, `causal_chain`, `implications` |
-| `NarrativeFlow` | 백서 제목+서사+섹션+시사점 (2) | `document_title`, `storyline`, `section_plan[{title, category_refs[], intent}]`, `key_implications[]` |
+| `NarrativeFlow` | 문서 제목+서사+섹션+시사점 (2) | `document_title`, `storyline`, `section_plan[{title, category_refs[], intent, subsections[]?}]`, `key_implications[]`. 섹션 수·소제목은 LLM이 능동 결정 |
 | `NarrativeCritique` | 서사 검증 (2) | `is_approved`, `feedback` |
 | `SectionDraft` | 섹션 본문 집필 (3) | `content` |
 | `TimelineEntry` | (v3.1 미사용 — 스키마만 잔존) | `period`, `events[]`, `significance` |
@@ -178,7 +187,7 @@ START → load_docs → [fanout] knowledge_extractor(×N) → knowledge_aggregat
 
 ### Step 3: Executive Summary Writing (집필)
 
-`NarrativeFlow.section_plan`에 따라 2-3페이지 분량의 고압축 비즈니스 백서를 집필한다.
+`NarrativeFlow.section_plan`에 따라 본문을 집필한다. 섹션 수·분량·소제목(subsections)은 LLM이 내용의 풍부함에 맞게 능동적으로 결정한다.
 
 | 노드 | 유형 | 설명 |
 |------|------|------|
@@ -334,7 +343,7 @@ output/<timestamp>/
 
 **고유명사 추출 (추가 출력 단계):** 파이프라인 종료 후 `main.py`가 최종 문서(`final_output`)에서 `export_proper_nouns()`로 고유명사를 추출해 `proper_nouns.json` 저장. `terms`(평탄 목록) + `categories`(dates/acronyms/camelcase/capitalized/phrases/metrics/code). 기존 파이프라인에 영향 없는 독립 출력 단계. `--proper-nouns <FILE>`로 추가 경로 지정 가능.
 
-**최종 백서 구조:** `# 제목` (H1 표지) → `## 본문 섹션` (1~2p 고압축 비즈니스 서사: 문제→결정→가치, 2~4 섹션) → `## 시사점 및 제언` (핵심 제언 3~5건). 월별 상세 타임라인 부록 없음. 카테고리 균형 경고는 콘솔/로그로만 보고.
+**최종 문서 구조:** `# 제목` (H1 표지) → `## 본문 섹션` (주제별, 수는 LLM이 능동 결정, 필요 시 `### 소제목`으로 세분) → `## 시사점 및 제언` (핵심 제언). 섹션·소제목·시사점 개수는 고정되지 않고 내용에 맞게 가벀. 월별 상세 타임라인 부록 없음. 카테고리 균형 경고는 콘솔/로그로만 보고.
 
 **DOCX 변환:** `python scripts/md_to_docx.py output/<timestamp>/step4_final.md`
 **KB 추출:** `python -m main --export-kb project_kb.json` (외부 시스템 연동용)
