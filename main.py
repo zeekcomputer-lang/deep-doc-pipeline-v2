@@ -29,7 +29,7 @@ from src.nodes import LOCAL_DATA_PATH
 from src.logger import reset_stats, summary, log_error
 from src.llm import reset_504_state, set_default_reasoning
 from src.artifacts import init_run_dir, set_run_dir, load_run_state, list_runs, save_json
-from src.utils import export_knowledge_base
+from src.utils import export_knowledge_base, export_proper_nouns
 
 
 def parse_args():
@@ -63,6 +63,8 @@ def parse_args():
                    help="DOCX 출력 경로 (기본: run_dir/백서.docx)")
     p.add_argument("--no-docx", action="store_true",
                    help="DOCX 자동 생성 비활성화 (마크다운만 생성)")
+    p.add_argument("--proper-nouns", default=None, metavar="FILE",
+                   help="고유명사 JSON 추가 저장 경로 (기본: run_dir/proper_nouns.json)")
     return p.parse_args()
 
 
@@ -162,6 +164,32 @@ def main():
             log_error("md_to_docx", _e, _tb.format_exc())
             print(f"  [WARN] DOCX 생성 실패 (마크다운은 정상 저장됨): {_e}")
 
+    # ── 고유명사 추출 (완성 문서 → 재사용용 JSON) ──
+    proper_nouns_path = None
+    if final and final != "(빈 결과)":
+        try:
+            import json
+            pn_payload = export_proper_nouns(
+                final,
+                document_title=final_state.get("document_title", ""),
+            )
+            save_json("proper_nouns.json", pn_payload)
+            from src.artifacts import get_run_dir as _grd
+            _rd = _grd()
+            proper_nouns_path = (_rd / "proper_nouns.json") if _rd else None
+            # --output 계열 경로 지정 시 동일 폴더에도 저장
+            if args.proper_nouns:
+                pn_out = Path(args.proper_nouns)
+                pn_out.parent.mkdir(parents=True, exist_ok=True)
+                pn_out.write_text(
+                    json.dumps(pn_payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                proper_nouns_path = pn_out
+        except Exception as _e:
+            log_error("export_proper_nouns", _e, _tb.format_exc())
+            print(f"  [WARN] 고유명사 추출 실패: {_e}")
+
     # ── KB 내보내기 (--export-kb) ──
     if args.export_kb:
         kb = final_state.get("knowledge_base", {})
@@ -209,6 +237,8 @@ def main():
     print(f"  최종 백서    : {len(final):,} chars")
     if docx_path:
         print(f"  DOCX 산출물  : {docx_path.resolve() if hasattr(docx_path, 'resolve') else docx_path}")
+    if proper_nouns_path:
+        print(f"  고유명사 JSON: {proper_nouns_path.resolve() if hasattr(proper_nouns_path, 'resolve') else proper_nouns_path}")
     print("=" * 70)
 
 

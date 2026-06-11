@@ -393,6 +393,64 @@ def extract_proper_nouns(text: str) -> List[str]:
     return sorted(c for c in candidates if len(c) >= 2)
 
 
+def categorize_proper_nouns(text: str) -> Dict[str, List[str]]:
+    """고유명사 후보를 유형별로 분류 (재사용 용이 JSON용).
+
+    extract_proper_nouns의 휴리스틱을 재사용하되, 결과를 유형별로 그룹핑한다.
+    유형: dates / acronyms / camelcase / capitalized / phrases / metrics / code
+    """
+    buckets: Dict[str, set] = {
+        "dates": set(),
+        "acronyms": set(),
+        "camelcase": set(),
+        "capitalized": set(),
+        "phrases": set(),
+        "metrics": set(),
+        "code": set(),
+    }
+
+    buckets["dates"].update(re.findall(r'\d{4}-\d{2}-\d{2}', text))
+    buckets["dates"].update(re.findall(r'\b\d{4}-\d{2}(?!\d)', text))
+    buckets["acronyms"].update(re.findall(r'\b[A-Z][A-Z0-9]{1,}(?:-[A-Z0-9]+)*\b', text))
+    buckets["camelcase"].update(re.findall(r'\b[A-Z][a-z]+(?:[A-Z][a-z]+)+\b', text))
+    for m in re.finditer(r'(?<=[a-z,;:]\s)([A-Z][a-z]{2,})', text):
+        if m.group(1).lower() not in _COMMON_WORDS:
+            buckets["capitalized"].add(m.group(1))
+    for m in re.finditer(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b', text):
+        words = m.group(1).split()
+        if any(w.lower() not in _COMMON_WORDS for w in words):
+            buckets["phrases"].add(m.group(1))
+    buckets["metrics"].update(re.findall(r'\d+(?:\.\d+)?\s*(?:%|KB|MB|GB|TB|ms|rpm|RPM)', text))
+    buckets["code"].update(re.findall(r'`([^`]+)`', text))
+
+    return {k: sorted(v for v in vs if len(v) >= 2) for k, vs in buckets.items()}
+
+
+def export_proper_nouns(
+    text: str,
+    document_title: str = "",
+    pipeline_version: str = "3.1",
+) -> Dict[str, Any]:
+    """완성 문서에서 고유명사를 추출·구조화한 JSON 페이로드 생성 (재사용용).
+
+    - terms: 중복 제거된 전체 고유명사 평탄 목록 (extract_proper_nouns)
+    - categories: 유형별 분류 (categorize_proper_nouns)
+    """
+    terms = extract_proper_nouns(text)
+    categories = categorize_proper_nouns(text)
+    return {
+        "metadata": {
+            "pipeline_version": pipeline_version,
+            "document_title": document_title,
+            "total_terms": len(terms),
+            "category_counts": {k: len(v) for k, v in categories.items()},
+        },
+        "terms": terms,
+        "categories": categories,
+    }
+
+
+
 # ──────────────────────────────────────────────────────────────
 # Knowledge Base JSON export
 # ──────────────────────────────────────────────────────────────

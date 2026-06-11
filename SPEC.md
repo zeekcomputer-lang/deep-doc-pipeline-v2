@@ -317,9 +317,13 @@ output/<timestamp>/
   ├── step2_category_analyses.json      # 4개 카테고리 심층 분석
   ├── step2_narrative_flow.md           # 교차 카테고리 스토리라인 + section_plan
   ├── step3_executive_summary.md        # Executive Summary 섹션별 원문
-  ├── step4_final.md                    # 최종 하이브리드 백서 (한국어, 고유명사 원어 보존)
+  ├── step4_final.md                    # 최종 백서 (한국어, 고유명사 원어 보존)
+  ├── 백서.docx                       # 완성 Word 백서 (자동 생성)
+  ├── proper_nouns.json                 # 완성 문서에서 추출한 고유명사 (재사용용, terms + 유형별 categories)
   └── pipeline_error.log                # 노드 실패 로그 (있을 경우)
 ```
+
+**고유명사 추출 (추가 출력 단계):** 파이프라인 종료 후 `main.py`가 최종 문서(`final_output`)에서 `export_proper_nouns()`로 고유명사를 추출해 `proper_nouns.json` 저장. `terms`(평탄 목록) + `categories`(dates/acronyms/camelcase/capitalized/phrases/metrics/code). 기존 파이프라인에 영향 없는 독립 출력 단계. `--proper-nouns <FILE>`로 추가 경로 지정 가능.
 
 **최종 백서 구조:** `# 제목` (H1 표지) → `## 본문 섹션` (1~2p 고압축 비즈니스 서사: 문제→결정→가치, 2~4 섹션) → `## 시사점 및 제언` (핵심 제언 3~5건). 월별 상세 타임라인 부록 없음. 카테고리 균형 경고는 콘솔/로그로만 보고.
 

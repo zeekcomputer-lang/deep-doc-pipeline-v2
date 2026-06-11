@@ -39,7 +39,7 @@
 ## 무엇을 해야 하나 (다음 에이전트)
 
 1. **실행하려면:** `.env` 셋업(OPENAI_BASE_URL / OPENAI_MODEL) → `python -m scripts.gen_dummy` → `python -m main`
-   - 종료 시 `output/<ts>/백서.docx` 가 자동 생성됨 (마크다운은 `step4_final.md`).
+   - 종료 시 `output/<ts>/백서.docx` 자동 생성 (마크다운은 `step4_final.md`), 그리고 `proper_nouns.json`(완성 문서 고유명사 추출, 재사용용) 동시 생성.
    - 인증은 API 키가 아니라 `src/llm.py` `DEFAULT_HEADERS` 또는 `OPENAI_EXTRA_HEADERS`(JSON) 헤더로 처리.
 2. **백서 커스터마이징:** `src/prompt_config.py` 편집
    - `DOCUMENT_TITLE` — 표지 제목 고정 (비우면 LLM 자동 생성)

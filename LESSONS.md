@@ -20,6 +20,7 @@
 > | L-023 | 프롬프트 | 사전 지식 주입(DOMAIN_KNOWLEDGE/KEY_TERMS)으로 LLM 어텐션 집중 + 환각 감소 |
 > | L-024 | 조립 | 제목 중복: 조립기가 붙이는 헤딩과 LLM 본문 내 헤딩이 겹친다 — 프롬프트 예방 + 결정론적 후처리 2계층 |
 > | L-025 | 프롬프트 | 시점 본문 반영: 데이터에 날짜가 있어도 "서술하라" 지시가 없으면 LLM이 안 녹인다 — 조건부 지시 + 환각 방지 |
+> | L-026 | 산출 | 기능 추가는 "독립 출력 단계"로 — 기존 파이프라인/그래프 불변, post-invoke 단계로만 추가 (고유명사 JSON) |
 
 ## 인덱스
 
@@ -399,6 +400,23 @@ v1.5 translate_node에서 영문 20,000단어 → 한글 6,000단어로 소실 (
 > LLM에게 정보를 "보여주는 것"과 "활용하라고 지시하는 것"은 다르다. 데이터 필드가 프롬프트에 있어도, 원하는 출력 행동은 명시적 지시로 요청해야 일관성이 생긴다. 단, 없는 정보를 지어내지 않도록 가드(환각 방지)를 함께 넣는다.
 
 **적용:** `prompt_config`(INCLUDE_TEMPORAL_CONTEXT/_build_temporal_block/get_temporal_directive, analysis·writing context), `utils.format_entries_for_prompt(show_date)`
+
+---
+
+## L-026: 기능 추가는 "독립 출력 단계"로 — 그래프 불변 원칙
+
+**요구:** 완성 문서에서 고유명사를 재추출해 JSON으로 저장. 단, **다른 기능은 절대 건들지 말 것.**
+
+**접근:** LangGraph 그래프·노드·스키마는 일체 수정하지 않고, `main.py`의 `graph.invoke()` **종료 직후(post-invoke)** 에 `final_output`을 입력으로 하는 독립 출력 단계만 추가. 추출 로직은 이미 있던 `extract_proper_nouns`(고유명사 휴리스틱) 재사용.
+
+**구현:**
+- `utils.categorize_proper_nouns()` / `export_proper_nouns()` — 순수 추가 (기존 함수 무변경, 삭제 0줄)
+- `main.py` — DOCX 생성 블록 뒤에 `save_json("proper_nouns.json", ...)` 추가, `--proper-nouns` 옵션
+
+**원칙:**
+> 검증된 파이프라인에 기능을 더할 때는, 내부 그래프를 수정하지 말고 **최종 결과물을 입력으로 받는 독립 후처리 단계**로 붙이라. 회귀 위험 0, 기존 동작 보존, 롤백 용이.
+
+**적용:** `utils.categorize_proper_nouns/export_proper_nouns`, `main.py`(post-invoke 고유명사 출력)
 
 ---
 

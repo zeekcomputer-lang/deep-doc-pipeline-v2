@@ -102,7 +102,8 @@ output/<timestamp>/
   ├── step3_executive_summary.md      본문(섹션 조립)
   ├── step4_compiled.md               제목+본문+시사점 조립본 (윤문 전)
   ├── step4_final.md                  최종 백서 마크다운 (한국어)
-  └── 백서.docx                     ⭐ 완성 Word 백서 (자동 생성)
+  ├── 백서.docx                     ⭐ 완성 Word 백서 (자동 생성)
+  └── proper_nouns.json               완성 문서에서 추출한 고유명사 (재사용용, 유형별 분류)
 ```
 
 ## 문서

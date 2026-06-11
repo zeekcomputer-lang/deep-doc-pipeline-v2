@@ -82,7 +82,7 @@ JSONL → 4-카테고리 지식 분류 → 카테고리별 심층 분석 → 경
 
 제목(H1) + 본문 섹션(H2) + 시사점 섹션 → 윤문 → END → **DOCX 자동 생성**.
 (v3.1: 월별 상세 타임라인 부록 제거. compiler가 Pure Python으로 제목+본문+시사점 조립.)
-산출물: `step4_compiled.md` + `step4_final.md` + `백서.docx`
+산출물: `step4_compiled.md` + `step4_final.md` + `백서.docx` + `proper_nouns.json`(완성 문서 고유명사 추출)
 
 ---
 
