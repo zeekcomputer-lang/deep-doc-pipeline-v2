@@ -18,6 +18,7 @@
 > | L-021 | 문서 | HANDOFF 상태 필드는 구현 커밋 직후 갱신해야 한다 — "구현 대기" 잔류가 다음 에이전트를 오도 |
 > | L-022 | 아키텍처 | 최종 산출물은 "완성 양식"으로 설계하라 — 제목+본문+시사점 구조화 + DOCX 자동화로 사용자 추가 수정 제거 |
 > | L-023 | 프롬프트 | 사전 지식 주입(DOMAIN_KNOWLEDGE/KEY_TERMS)으로 LLM 어텐션 집중 + 환각 감소 |
+> | L-024 | 조립 | 제목 중복: 조립기가 붙이는 헤딩과 LLM 본문 내 헤딩이 겹친다 — 프롬프트 예방 + 결정론적 후처리 2계층 |
 
 ## 인덱스
 
@@ -360,6 +361,28 @@ v1.5 translate_node에서 영문 20,000단어 → 한글 6,000단어로 소실 (
 > LLM이 모르는 지식은 "추론"에 맡기지 말고 "주입"하라. 용어 정의·단계 목록·강조 관점을 프롬프트 상단에 고정하면 저성능 모델의 일관성과 정확도가 올라간다.
 
 **적용:** `src/prompt_config.py` (DOMAIN_KNOWLEDGE/KEY_TERMS/get_domain_knowledge), 전 LLM 노드 context 함수
+
+---
+
+## L-024: 제목·구분자 중복 — 조립기 헤딩 vs LLM 본문 내 헤딩
+
+**증상:** 최종 백서에서 섹션 제목이 2번씩 출력됨.
+```
+## 리스크 관리와 대응 체계 강화
+## 리스크 관리와 대응 체계 강화
+본문...
+```
+
+**근본 원인:** `compile_executive_summary`가 결정론적으로 `## {title}`을 붙이는데, `section_writer` LLM이 본문(`content`)에도 같은 제목을 다시 생성. 또한 LLM이 placeholder('## Title')이나 다음 섹션 제목을 미리 쓰는 경우도 존재.
+
+**해결 (2계층 방어):**
+1. **예방(프롬프트):** `section_writer` 프롬프트에 "섹션 제목·헤딩 출력 금지, 순수 본문 문단만" 명시. polish 프롬프트에 "헤딩 추가·복제 금지".
+2. **방어(결정론적 후처리):** `strip_section_title()` — 본문에서 섹션 제목과 동일하거나 placeholder인 헤딩 제거. `dedup_adjacent_headings()` — 사이에 본문 없이 연속 반복되는 헤딩 병합. 정규화는 공백·구두점·대소문자·trailing # 무시.
+
+**원칙:**
+> LLM 출력 구조는 프롬프트로 "요청"하되, 결코 신뢰하지 말고 결정론적 후처리로 "보장"하라. 조립기(Python)와 생성기(LLM)가 둘 다 동일 구조 요소(제목)를 생성할 수 있으면 책임 경계를 명확히 하고(→ 조립기만 제목 담당) 중복 제거 가드를 둔다.
+
+**적용:** `utils.strip_section_title/dedup_adjacent_headings/compile_executive_summary/compile_whitepaper`, `nodes.section_writer`(프롬프트)·`polish`(프롬프트+dedup)
 
 ---
 

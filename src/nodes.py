@@ -63,6 +63,7 @@ from .utils import (
     format_category_entries,
     compile_executive_summary,
     compile_whitepaper,
+    dedup_adjacent_headings,
     split_by_section,
     export_knowledge_base,
 )
@@ -681,8 +682,12 @@ _WRITER_SYSTEM_TEMPLATE = """\
 [작성 지침]
 - 비즈니스 임팩트와 인사이트 중심의 전문적인 톤앤매너를 유지
 - 단순한 이벤트 나열이 아닌, 인과관계와 시사점이 드러나도록 서술
-- 마크다운 포맷 사용
 - 2-3 문단, 고압축
+
+[⚠ 출력 형식 — 반드시 준수]
+- **섹션 제목을 출력에 포함하지 마십시오.** 제목('{title}')은 시스템이 별도로 붙입니다.
+- '#', '##', '###' 등 어떤 마크다운 헤딩도 쓰지 마십시오. 순수 본문 문단만 작성합니다.
+- 다른 섹션 제목이나 '시사점' 제목을 미리 쓰지 마십시오. 오직 이 섹션의 본문만 출력합니다.
 """
 
 
@@ -858,6 +863,7 @@ _POLISH_SYSTEM = """\
 - 사실 변경이나 추가
 - 섹션 구조 변경
 - 고유명사 번역이나 변형
+- **헤딩(제목) 추가·복제·중복.** 입력의 헤딩 개수와 문구를 그대로 유지하십시오.
 
 원문의 의미와 사실을 100% 보존하면서 문장 흐름만 다듬으십시오.
 """
@@ -883,7 +889,7 @@ def polish_node(state: GraphState) -> dict:
 
     if not sections:
         # No ## headings found — polish as a single block
-        polished = _polish_single_block(sys_prompt, compiled)
+        polished = dedup_adjacent_headings(_polish_single_block(sys_prompt, compiled))
         save_text("step4_final.md", polished)
         plog("polish", f"윤문 완료 (단일 블록): {measure_text_bytes(polished)}B")
         return {"final_output": polished}
@@ -902,7 +908,7 @@ def polish_node(state: GraphState) -> dict:
         polished_parts.append(polished_section)
         psub("polish", f"섹션 {si + 1}/{len(sections)} 윤문 완료")
 
-    polished = "".join(polished_parts)
+    polished = dedup_adjacent_headings("".join(polished_parts))
 
     plog(
         "polish",

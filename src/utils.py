@@ -179,6 +179,59 @@ def format_category_entries(
 # Compile / Assembly utilities
 # ──────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────
+# Heading de-duplication (방어적 후처리)
+# ──────────────────────────────────────────────────────────────
+_HEADING_LINE_RE = re.compile(r'^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$')
+_PLACEHOLDER_TITLES = {"title", "section", "제목", "섹션제목"}
+
+
+def _norm_heading(text: str) -> str:
+    """헤딩 비교용 정규화 (공백·구두점·대소문자 무시)."""
+    return re.sub(r'[\s\W_]+', '', text or '').lower()
+
+
+def strip_section_title(content: str, title: str) -> str:
+    """섹션 본문에서 섹션 제목과 중복되는 헤딩 라인 + placeholder 헤딩을 제거.
+
+    section_writer LLM이 본문에 '## {title}'을 다시 넣는 경우를 결정론적으로 제거한다.
+    본문 중간의 정당한 소제목(### 등 title과 다른 헤딩)은 보존한다.
+    """
+    if not content:
+        return content
+    norm_title = _norm_heading(title)
+    out: List[str] = []
+    for line in content.split('\n'):
+        m = _HEADING_LINE_RE.match(line)
+        if m:
+            norm = _norm_heading(m.group(2))
+            if norm == norm_title or norm in _PLACEHOLDER_TITLES:
+                continue  # 섹션 제목과 동일하거나 placeholder인 헤딩 제거
+        out.append(line)
+    return '\n'.join(out).strip()
+
+
+def dedup_adjacent_headings(text: str) -> str:
+    """본문 사이에 내용 없이 연속으로 반복되는 동일 헤딩을 하나로 합친다.
+
+    예) '## 리스크...\n## 리스크...' → '## 리스크...'
+    헤딩 사이에 실제 본문이 등장하면 리셋되어 정상 헤딩은 보존된다.
+    """
+    out: List[str] = []
+    last_heading_norm = None
+    for line in text.split('\n'):
+        m = _HEADING_LINE_RE.match(line)
+        if m:
+            norm = _norm_heading(m.group(2))
+            if norm == last_heading_norm:
+                continue  # 직전 헤딩과 동일 + 사이에 본문 없음 → 중복
+            last_heading_norm = norm
+        elif line.strip():
+            last_heading_norm = None  # 본문 등장 → 리셋
+        out.append(line)
+    return '\n'.join(out)
+
+
 def compile_executive_summary(
     section_plan: List[Dict],
     completed: Dict[int, str],
@@ -186,11 +239,13 @@ def compile_executive_summary(
     """Assemble body sections from completed drafts. Pure Python, no LLM.
 
     제목(H1)은 compile_whitepaper에서 삽입하므로 여기서는 섹션(H2)만 조립.
+    각 본문에서 섹션 제목과 중복되는 헤딩을 제거한 뒤 '## {title}'을 한 번만 붙인다.
     """
     parts: List[str] = []
     for i, item in enumerate(section_plan):
         title = item.get("title", f"섹션 {i}")
-        body = completed.get(i, "_(섹션 누락)_").strip()
+        raw = completed.get(i, "_(섹션 누락)_")
+        body = strip_section_title(raw, title)
         parts.append(f"## {title}\n\n{body}\n")
     return "\n".join(parts)
 
@@ -229,7 +284,8 @@ def compile_whitepaper(
         parts.append("\n---\n")
         parts.append(implications)
 
-    return "\n".join(parts)
+    # 최종 방어: 연속 중복 헤딩 제거
+    return dedup_adjacent_headings("\n".join(parts))
 
 
 # ──────────────────────────────────────────────────────────────
