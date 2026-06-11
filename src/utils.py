@@ -183,34 +183,53 @@ def compile_executive_summary(
     section_plan: List[Dict],
     completed: Dict[int, str],
 ) -> str:
-    """Assemble Executive Summary from completed sections. Pure Python, no LLM."""
-    parts: List[str] = ["# Executive Summary\n"]
+    """Assemble body sections from completed drafts. Pure Python, no LLM.
+
+    제목(H1)은 compile_whitepaper에서 삽입하므로 여기서는 섹션(H2)만 조립.
+    """
+    parts: List[str] = []
     for i, item in enumerate(section_plan):
         title = item.get("title", f"섹션 {i}")
-        body = completed.get(i, "_(섹션 누락)_")
-        parts.append(f"\n## {title}\n\n{body}\n")
-    return "".join(parts)
+        body = completed.get(i, "_(섹션 누락)_").strip()
+        parts.append(f"## {title}\n\n{body}\n")
+    return "\n".join(parts)
 
 
-def compile_hybrid_whitepaper(
+def _format_implications(key_implications: List[str]) -> str:
+    """핵심 시사점 목록 → 마크다운 섹션 (Pure Python)."""
+    if not key_implications:
+        return ""
+    lines = ["## 시사점 및 제언\n"]
+    for imp in key_implications:
+        imp = (imp or "").strip()
+        if imp:
+            lines.append(f"- {imp}")
+    return "\n".join(lines) + "\n"
+
+
+def compile_whitepaper(
+    document_title: str,
     executive_summary: str,
-    chronological_appendix: str,
-    category_warnings: List[str],
+    key_implications: List[str],
 ) -> str:
-    """Final assembly: Executive Summary + Appendix + Audit Log. Pure Python."""
-    parts = [executive_summary]
+    """최종 백서 조립: 제목(H1) + 본문 + 시사점. Pure Python, no LLM.
 
-    parts.append("\n\n---\n\n")
-    parts.append("# 부록: 월별 상세 타임라인\n\n")
-    parts.append(chronological_appendix)
+    월별 상세 타임라인 부록 없음 (v3.1에서 제거).
+    감사 로그도 최종 산출물에서 제외 (로그 파일과 콘솔로만 보고).
+    """
+    title = (document_title or "").strip() or "프로젝트 수행 결과 백서"
+    parts: List[str] = [f"# {title}\n"]
 
-    # Audit log (category warnings only)
-    if category_warnings:
-        parts.append("\n\n---\n\n### 파이프라인 감사 로그\n\n")
-        for w in category_warnings:
-            parts.append(f"- {w}\n")
+    body = executive_summary.strip()
+    if body:
+        parts.append(body)
 
-    return "".join(parts)
+    implications = _format_implications(key_implications)
+    if implications:
+        parts.append("\n---\n")
+        parts.append(implications)
+
+    return "\n".join(parts)
 
 
 # ──────────────────────────────────────────────────────────────

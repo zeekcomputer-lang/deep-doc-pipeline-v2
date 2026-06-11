@@ -12,15 +12,14 @@
 LangGraph + OpenAI SDK + Pydantic 기반 문서 생성 파이프라인.
 JSONL 원본 데이터를 **카테고리별 지식 구조화** → **서사 설계** → **섹션 집필** → **최종 백서**로 변환합니다.
 
-### v3 핵심 변경점
+### v3.1 핵심 변경점
 
-- **카테고리 우선 지식 구조화** — 4개 축으로 분류 후 분석
-  - `Architecture_and_Tech` · `Risk_and_Troubleshooting` · `Business_and_Feature` · `Lessons_Learned`
-- **날짜 비의존(Date-resilient)** — 명확한 날짜 마커 없이도 동작
-- **지식 베이스 내보내기** — JSON / RDB-ready 포맷
-- **하이브리드 출력** — Executive Summary(비즈니스 인사이트) + Chronological Appendix(타임라인)
+- **완성 백서 출력** — 제목 + 본문(1~2p) + 시사점 구조의 세련된 비즈니스 보고서. 월별 상세 타임라인 부록 제거.
+- **DOCX 자동 생성** — 파이프라인 종료 시 Word 문서 자동 생성 (추가 수정 불필요한 완성 양식)
+- **사전 지식 주입** — `DOMAIN_KNOWLEDGE`/`KEY_TERMS`로 LLM이 모르는 도메인 지식·단계·용어를 사전 주입 (어텐션 집중 + 환각 감소)
+- **카테고리 우선 지식 구조화** — 4개 축(`Architecture_and_Tech` · `Risk_and_Troubleshooting` · `Business_and_Feature` · `Lessons_Learned`)
 - **한국어 직접 출력 (KR-first)** — 번역 단계 없이 한국어로 직접 생성, 고유명사만 원어 보존
-- **커스텀 프롬프트 주입** — `prompt_config.py`에서 도메인별 프롬프트 조정
+- **지식 베이스 내보내기** — JSON / RDB-ready 포맷
 - **95KB 예산 가드** · **504 방어**
 
 ## 프로젝트 구조
@@ -64,6 +63,20 @@ python -m main --export-kb kb.json        # 지식 베이스 JSON 내보내기
 python -m main --reasoning medium         # 추론 수준 조절 (high|medium)
 python -m main --resume output/<dir> --resume-from step3   # 중간 지점부터 재개 (step2|step3|step4|polish)
 python -m main --list-runs                # 이전 실행 목록
+python -m main --docx report.docx         # DOCX 출력 경로 지정
+python -m main --no-docx                  # DOCX 자동 생성 비활성화 (마크다운만)
+```
+
+### 백서 커스터마이징 (`src/prompt_config.py`)
+
+```python
+DOCUMENT_TITLE = ""                # 표지 제목 (비우면 LLM 자동 생성)
+DOCUMENT_PURPOSE = "..."           # 문서 목적
+DOMAIN_KNOWLEDGE = """            # ★ LLM이 모르는 사전 지식 주입
+- 개발 단계: 기획 → 설계 → 구현 → 안정화 → 운영전환
+- 'P99'은 상위 1% 느린 요청의 응답시간을 의미한다
+"""
+KEY_TERMS = {"Go-Live": "무중단 운영 전환 단계"}   # 용어집
 ```
 
 ## 파이프라인 그래프
@@ -72,7 +85,7 @@ python -m main --list-runs                # 이전 실행 목록
 load_docs → knowledge_extractor(×N) → knowledge_aggregator → temporal_indexer
          → category_analyzer(×4) → narrative_planner ⟲ narrative_critique
          → init_writing → section_writer → save_section ⟲ route_next_section
-         → timeline_formatter → compiler → polish → END
+         → compiler → polish → END   (종료 후 DOCX 자동 생성)
 ```
 
 ## 출력물
@@ -83,10 +96,10 @@ output/<timestamp>/
   ├── step1_temporal_index.json       best-effort 시간순 인덱스
   ├── step2_category_analyses.json    카테고리별 분석
   ├── step2_narrative_flow.md         서사 흐름 설계
-  ├── step3_executive_summary.md      Executive Summary
-  ├── step4_appendix_timeline.md      시간순 부록
-  ├── step4_compiled.md               조립본 (윤문 전)
-  └── step4_final.md                  최종 백서 (한국어, 고유명사 원어)
+  ├── step3_executive_summary.md      본문(섹션 조립)
+  ├── step4_compiled.md               제목+본문+시사점 조립본 (윤문 전)
+  ├── step4_final.md                  최종 백서 마크다운 (한국어)
+  └── 백서.docx                     ⭐ 완성 Word 백서 (자동 생성)
 ```
 
 ## 문서

@@ -28,7 +28,6 @@ from .schemas import (
     NarrativeFlow,
     NarrativeCritique,
     SectionDraft,
-    TimelineEntry,
     PolishedDocument,
 )
 from .llm import (
@@ -50,8 +49,8 @@ from .prompt_config import (
     get_extraction_context,
     get_analysis_context,
     get_writing_context,
-    get_assembly_context,
     get_proper_noun_guard,
+    get_document_title,
 )
 from .utils import (
     CATEGORIES,
@@ -63,7 +62,7 @@ from .utils import (
     format_entries_for_prompt,
     format_category_entries,
     compile_executive_summary,
-    compile_hybrid_whitepaper,
+    compile_whitepaper,
     split_by_section,
     export_knowledge_base,
 )
@@ -443,14 +442,16 @@ def _merge_category_analysis(
 
 _NARRATIVE_SYSTEM = """\
 당신은 수석 비즈니스 분석가입니다.
-4개 카테고리 분석 결과와 시간순 데이터를 종합하여 프로젝트 전체를 관통하는 서사 흐름을 설계하십시오.
+4개 카테고리 분석 결과와 시간순 데이터를 종합하여 경영진용 비즈니스 백서를 설계하십시오.
 
-서사 구조: 초기 문제 인식 및 한계 → 핵심 의사결정 및 해결 전략 → 최종 창출 가치 및 교훈
-
-이 흐름을 바탕으로 Executive Summary의 section_plan을 수립하십시오.
-각 섹션에는 참조할 카테고리(category_refs)와 핵심 메시지(intent)를 명시하십시오.
+다음 4가지를 모두 산출하십시오:
+1. document_title: 백서 표지 제목 (프로젝트 핵심 주제를 담은 전문적인 한 줄 제목)
+2. storyline: 프로젝트를 관통하는 서사 흐름 — 초기 문제 인식 → 핵심 의사결정 → 창출 가치 → 교훈
+3. section_plan: 본문 섹션 기획 (2~4개). 각 섹션에 category_refs와 intent 명시
+4. key_implications: 문서 마지막 '시사점' 섹션에 들어갈 핵심 제언 3~5개 (향후 방향·권고 중심)
 
 단순한 시간적 나열을 배제하고, 비즈니스 임팩트와 인사이트 중심으로 구성하십시오.
+본문은 1~2페이지 분량의 고압축 백서입니다. 섹션 수는 2~4개로 제한하십시오.
 """
 
 
@@ -511,23 +512,31 @@ def narrative_planner_node(state: GraphState) -> dict:
     # Convert section_plan to list of dicts for state
     section_plan_dicts = [sp.model_dump() for sp in result.section_plan]
 
+    # 제목: 사용자 지정(prompt_config) 우선, 없으면 LLM 생성본
+    title = get_document_title() or (result.document_title or "").strip()
+
     plog(
         "narrative_planner",
-        f"서사 흐름 설계 완료: {len(result.section_plan)}개 섹션",
+        f"서사 흐름 설계 완료: {len(result.section_plan)}개 섹션, "
+        f"시사점 {len(result.key_implications)}건 | 제목='{title}'",
     )
 
     save_text("step2_narrative_flow.md", result.storyline)
     save_json(
         "step2_narrative_flow.json",
         {
+            "document_title": title,
             "storyline": result.storyline,
             "section_plan": section_plan_dicts,
+            "key_implications": result.key_implications,
         },
     )
 
     return {
+        "document_title": title,
         "narrative_flow": result.storyline,
         "executive_sections": section_plan_dicts,
+        "key_implications": result.key_implications,
     }
 
 
@@ -780,148 +789,56 @@ def route_next_section(state: GraphState) -> str:
     """다음 섹션 여부에 따른 분기.
 
     - 남은 섹션 있음 → section_writer
-    - 모든 섹션 완료 → timeline_formatter (Step 4 진입)
+    - 모든 섹션 완료 → compiler (Step 4 진입)
     """
     idx = state.get("current_section_index", 0)
     total = len(state.get("executive_sections", []))
     if idx < total:
         return "section_writer"
-    return "timeline_formatter"
+    return "compiler"
 
 
 # ══════════════════════════════════════════════════════════════
-#  STEP 4 — Hybrid Assembly
+#  STEP 4 — Whitepaper Assembly (제목 + 본문 + 시사점)
 # ══════════════════════════════════════════════════════════════
+#
+# v3.1: 월별 상세 타임라인 부록 제거. timeline_formatter 노드 삭제.
+#       compiler가 제목(H1) + 본문 섹션 + 시사점을 Pure Python으로 조립한다.
 
 
-# ── 4-1  timeline_formatter ──────────────────────────────────
-
-_TIMELINE_SYSTEM = """\
-당신은 문서 편집 전문가입니다.
-아래 시간순 데이터를 가독성 높은 타임라인 형태로 정리하십시오.
-
-[작성 지침]
-- 기간별(YYYY-MM)로 그룹화하여 마크다운 형식으로 작성
-- 각 기간의 핵심 이벤트와 의의를 간결하게 서술
-- 날짜 미상 항목은 "기타 항목" 섹션으로 별도 배치
-- 한국어로 작성, 기술 고유명사는 원어 보존
-"""
-
-
-@retry_on_504
-def timeline_formatter_node(state: GraphState) -> dict:
-    """시간순 인덱스 → 가독성 높은 마크다운 부록 변환 (LLM).
-
-    Executive Summary 조립 전에 시계열 부록을 먼저 생성.
-    대량 데이터 시 배치 분할하여 처리.
-    """
-    temporal_index = state.get("temporal_index", [])
-    completed_sections = state.get("completed_sections", {})
-    sections = state.get("executive_sections", [])
-
-    # First, save executive summary artifact
-    exec_summary = compile_executive_summary(sections, completed_sections)
-    save_text("step3_executive_summary.md", exec_summary)
-    psub("timeline_formatter", f"Executive Summary 저장 완료 ({len(completed_sections)}개 섹션)")
-
-    if not temporal_index:
-        plog("timeline_formatter", "시간순 데이터 없음 — 빈 부록")
-        return {
-            "executive_summary": exec_summary,
-            "chronological_appendix": "(시계열 데이터 없음)",
-        }
-
-    sys_prompt = _TIMELINE_SYSTEM + get_assembly_context() + get_proper_noun_guard()
-
-    # Budget-aware batching
-    budget = available_data_budget(
-        sys_prompt,
-        PolishedDocument.model_json_schema(),  # reuse for simple content output
-        budget_override=effective_budget(),
-    )
-
-    batches = split_items_for_budget(
-        temporal_index,
-        format_entries_for_prompt,
-        budget,
-    )
-
-    appendix_parts: List[str] = []
-
-    for bi, batch in enumerate(batches):
-        batch_text = format_entries_for_prompt(batch)
-
-        messages = [
-            {"role": "system", "content": sys_prompt},
-            {
-                "role": "user",
-                "content": (
-                    f"시간순 데이터 (배치 {bi + 1}/{len(batches)}, {len(batch)}건):\n\n"
-                    f"{batch_text}"
-                ),
-            },
-        ]
-
-        try:
-            result: PolishedDocument = structured_call(
-                messages,
-                response_model=PolishedDocument,
-                role="writer",
-                temperature=0.2,
-                stream=True,
-            )
-            appendix_parts.append(result.content)
-        except Exception as e:
-            log_error("timeline_formatter", e, _tb.format_exc())
-            psub("timeline_formatter", f"배치 {bi + 1} 실패: {e}")
-            # Fallback: raw formatted text
-            appendix_parts.append(
-                f"### 배치 {bi + 1} (자동 포맷)\n\n{batch_text}"
-            )
-
-    appendix = "\n\n".join(appendix_parts)
-
-    plog(
-        "timeline_formatter",
-        f"타임라인 부록 완료: {len(temporal_index)}건 → {len(batches)}배치",
-    )
-
-    save_text("step4_appendix_timeline.md", appendix)
-    return {
-        "executive_summary": exec_summary,
-        "chronological_appendix": appendix,
-    }
-
-
-# ── 4-2  compiler ────────────────────────────────────────────
+# ── 4-1  compiler ────────────────────────────────────────────
 
 def compiler_node(state: GraphState) -> dict:
-    """Executive Summary + 부록 + 감사 로그 조합 (Pure Python).
+    """제목 + 본문(섹션) + 시사점 조립 (Pure Python, no LLM).
 
-    최종 하이브리드 백서를 조립.
+    완성된 비즈니스 백서 형태로 조립. 월별 타임라인 부록 없음.
+    감사 로그(카테고리 경고)는 콘솔/로그로만 보고하고 최종 산출물에는 포함하지 않는다.
     """
-    exec_summary = state.get("executive_summary", "")
-    appendix = state.get("chronological_appendix", "")
+    document_title = state.get("document_title", "")
+    key_implications = state.get("key_implications", [])
+    completed = state.get("completed_sections", {})
+    sections = state.get("executive_sections", [])
     kb = state.get("knowledge_base", {})
 
-    # If executive_summary not yet compiled, compile it now
-    if not exec_summary:
-        completed = state.get("completed_sections", {})
-        sections = state.get("executive_sections", [])
-        exec_summary = compile_executive_summary(sections, completed)
+    # 본문(섹션) 조립
+    exec_summary = compile_executive_summary(sections, completed)
+    save_text("step3_executive_summary.md", exec_summary)
+    psub("compiler", f"본문 조립 완료 ({len(completed)}개 섹션)")
 
-    # Category warnings for audit log
-    category_warnings = check_category_balance(kb)
+    # 카테고리 균형 경고 — 로그로만 보고 (최종 문서 제외)
+    for w in check_category_balance(kb):
+        psub("compiler", f"⚠️ {w}")
 
-    compiled = compile_hybrid_whitepaper(
+    compiled = compile_whitepaper(
+        document_title,
         exec_summary,
-        appendix,
-        category_warnings,
+        key_implications,
     )
 
     plog(
         "compiler",
-        f"하이브리드 백서 조립 완료: {measure_text_bytes(compiled)}B",
+        f"백서 조립 완료: 제목='{document_title or '(자동)'}', "
+        f"시사점 {len(key_implications)}건, {measure_text_bytes(compiled)}B",
     )
 
     save_text("step4_compiled.md", compiled)
@@ -1067,8 +984,7 @@ __all__ = [
     "section_writer_node",
     "save_section_node",
     "route_next_section",
-    # Step 4: Hybrid Assembly
-    "timeline_formatter_node",
+    # Step 4: Whitepaper Assembly
     "compiler_node",
     "polish_node",
 ]

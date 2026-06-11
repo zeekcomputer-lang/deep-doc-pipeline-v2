@@ -32,7 +32,6 @@ class GraphState(TypedDict, total=False):
     completed_sections: Annotated[Dict[int, str], update_dict]   # idx → 완성 텍스트
 
     # ── Step 4: Hybrid Assembly ────────────────────────────────
-    executive_summary: str                                       # 조립된 Executive Summary
-    chronological_appendix: str                                  # 시계열 부록
+    executive_summary: str                                       # 조립된 본문(제목+섹션)
     final_compiled: str                                          # 최종 조합 문서
     final_output: str                                            # 윤문 완료 최종본

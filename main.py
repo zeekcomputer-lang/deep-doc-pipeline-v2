@@ -59,6 +59,10 @@ def parse_args():
                    help="재개 시작 단계 (기본: step3)")
     p.add_argument("--list-runs", action="store_true",
                    help="output/ 하위 실행 디렉토리 목록 표시 후 종료")
+    p.add_argument("--docx", default=None, metavar="FILE",
+                   help="DOCX 출력 경로 (기본: run_dir/백서.docx)")
+    p.add_argument("--no-docx", action="store_true",
+                   help="DOCX 자동 생성 비활성화 (마크다운만 생성)")
     return p.parse_args()
 
 
@@ -118,6 +122,7 @@ def main():
             "temporal_index": [],
             "category_analyses": {},
             "completed_sections": {},
+            "key_implications": [],
             "narrative_retry_count": 0,
         }
         graph = build_graph()
@@ -139,6 +144,23 @@ def main():
         sys.exit(1)
 
     final = final_state.get("final_output", "(빈 결과)")
+
+    # ── DOCX 자동 생성 (완성 백서) ──
+    docx_path = None
+    if not args.no_docx and final and final != "(빈 결과)":
+        try:
+            from scripts.md_to_docx import build_whitepaper_docx
+            from src.artifacts import get_run_dir
+            rd = get_run_dir()
+            docx_out = (
+                Path(args.docx) if args.docx
+                else (rd / "백서.docx" if rd else Path("백서.docx"))
+            )
+            build_whitepaper_docx(final, docx_out)
+            docx_path = docx_out
+        except Exception as _e:
+            log_error("md_to_docx", _e, _tb.format_exc())
+            print(f"  [WARN] DOCX 생성 실패 (마크다운은 정상 저장됨): {_e}")
 
     # ── KB 내보내기 (--export-kb) ──
     if args.export_kb:
@@ -179,9 +201,14 @@ def main():
         print(f"  지식 엔트리  : {sum(cat_counts.values())}건")
         for cat, cnt in cat_counts.items():
             print(f"    {cat}: {cnt}건")
-        print(f"  시간순 인덱스 : {len(ti)}건 (dated: {sum(1 for t in ti if t.get('period') != 'undated')})")
         print(f"  완성 섹션    : {len(final_state.get('completed_sections', {}))}개")
+        print(f"  핵심 시사점  : {len(final_state.get('key_implications', []))}건")
+    title = final_state.get("document_title", "")
+    if title:
+        print(f"  백서 제목    : {title}")
     print(f"  최종 백서    : {len(final):,} chars")
+    if docx_path:
+        print(f"  DOCX 산출물  : {docx_path.resolve() if hasattr(docx_path, 'resolve') else docx_path}")
     print("=" * 70)
 
 

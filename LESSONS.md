@@ -16,6 +16,8 @@
 > | ID | 분류 | 요약 |
 > |----|------|------|
 > | L-021 | 문서 | HANDOFF 상태 필드는 구현 커밋 직후 갱신해야 한다 — "구현 대기" 잔류가 다음 에이전트를 오도 |
+> | L-022 | 아키텍처 | 최종 산출물은 "완성 양식"으로 설계하라 — 제목+본문+시사점 구조화 + DOCX 자동화로 사용자 추가 수정 제거 |
+> | L-023 | 프롬프트 | 사전 지식 주입(DOMAIN_KNOWLEDGE/KEY_TERMS)으로 LLM 어텐션 집중 + 환각 감소 |
 
 ## 인덱스
 
@@ -328,6 +330,36 @@ v1.5 translate_node에서 영문 20,000단어 → 한글 6,000단어로 소실 (
 > 다음 에이전트 진입 시 첫 단계: `git log --oneline` ↔ HANDOFF 상태 필드 교차 확인.
 
 **적용:** HANDOFF.md §헤더+§1+§2+§4+§9, README.md 구조/그래프/CLI/출력, STATUS.md 신규 추가 (2026-06-11)
+
+---
+
+## L-022: 최종 산출물은 "완성 양식"으로 — 제목+본문+시사점 + DOCX 자동화
+
+**배경:** v3.0은 Executive Summary + 월별 상세 타임라인 부록의 "하이브리드" 출력이었다. 그러나 경영진용 보고서는 상세 타임라인이 오히려 가독성을 해치고, 마크다운만 있으면 사용자가 수동으로 Word로 옮겨야 했다.
+
+**변경 (v3.1):**
+1. **타임라인 부록 제거** — `timeline_formatter` 노드 삭제, LLM 호출 1종 감소. `temporal_index`는 유지(날짜 컨텍스트용)하되 최종문서엔 미포함.
+2. **완성 백서 구조** — `compile_whitepaper()`: H1 제목 + 본문(H2 2~4섹션) + 시사점 섹션. 제목·시사점은 narrative_planner가 한 번에 생성(NarrativeFlow 스키마 확장).
+3. **DOCX 자동화** — `build_whitepaper_docx()` 가 표지 제목·네이비 헤딩·양쪽정렬 본문·페이지번호를 적용. main.py가 파이프라인 종료 시 자동 호출.
+
+**원칙:**
+> 최종 산출물은 "그대로 제출 가능한" 완성 형태여야 한다. 중간 산출물(JSON/MD)과 최종 산출물(DOCX)을 분리하고, 최종본은 양식·타이포그래피까지 자동화해 사용자 수작업을 0으로 만든다.
+> python-docx에서 한글 폰트는 `w:rFonts/w:eastAsia`를 명시해야 적용된다. 명조 설정만으론 한글이 기본 폰트로 새서 보일 수 있다.
+
+**적용:** `utils.compile_whitepaper`, `nodes.compiler_node`(timeline 제거), `scripts/md_to_docx.build_whitepaper_docx`, `main.py`
+
+---
+
+## L-023: 사전 지식 주입으로 LLM 어텐션 집중 + 환각 감소
+
+**문제:** 저성능 LLM(gpt-oss)은 도메인 고유 용어·프로세스·단계를 모르거나 일반 상식으로 잘못 추론한다. 예: "Go-Live"를 단순 배포로 오해, 개발 단계를 임의로 추정.
+
+**해결:** `prompt_config.py`에 `DOMAIN_KNOWLEDGE`(자유 텍스트) + `KEY_TERMS`(용어집 dict) 추가. `_build_domain_block()`이 전 LLM 노드(추출·분석·집필)의 system 프롬프트에 자동 주입.
+
+**원칙:**
+> LLM이 모르는 지식은 "추론"에 맡기지 말고 "주입"하라. 용어 정의·단계 목록·강조 관점을 프롬프트 상단에 고정하면 저성능 모델의 일관성과 정확도가 올라간다.
+
+**적용:** `src/prompt_config.py` (DOMAIN_KNOWLEDGE/KEY_TERMS/get_domain_knowledge), 전 LLM 노드 context 함수
 
 ---
 

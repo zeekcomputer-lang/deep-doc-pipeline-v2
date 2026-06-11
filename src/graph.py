@@ -1,5 +1,5 @@
 """
-LangGraph graph assembly — v3.0 (KR-first, category-based).
+LangGraph graph assembly — v3.1 (KR-first, category-based, 완성 백서).
 """
 from __future__ import annotations
 from langgraph.graph import StateGraph, START, END
@@ -53,15 +53,13 @@ def build_graph():
     g.add_conditional_edges(
         "save_section",
         N.route_next_section,
-        {"section_writer": "section_writer", "timeline_formatter": "timeline_formatter"},
+        {"section_writer": "section_writer", "compiler": "compiler"},
     )
 
-    # ── Step 4: Hybrid Assembly
-    g.add_node("timeline_formatter", N.timeline_formatter_node)
+    # ── Step 4: Whitepaper Assembly (제목 + 본문 + 시사점)
     g.add_node("compiler", N.compiler_node)
     g.add_node("polish", N.polish_node)
 
-    g.add_edge("timeline_formatter", "compiler")
     g.add_edge("compiler", "polish")
     g.add_edge("polish", END)
 
@@ -74,7 +72,7 @@ def build_resume_graph(resume_from: str):
     resume_from:
         "step2" — Step 2부터 (knowledge_base + temporal_index 필요)
         "step3" — Step 3부터 (+ category_analyses + narrative_flow 필요)
-        "step4" — Step 4부터 (+ executive_summary 필요)
+        "step4" — Step 4부터 (+ completed_sections/executive_sections 필요)
         "polish" — polish만 (final_compiled 필요)
     """
     g = StateGraph(GraphState)
@@ -86,7 +84,6 @@ def build_resume_graph(resume_from: str):
         g.add_node("init_writing", N.init_writing_node)
         g.add_node("section_writer", N.section_writer_node)
         g.add_node("save_section", N.save_section_node)
-        g.add_node("timeline_formatter", N.timeline_formatter_node)
         g.add_node("compiler", N.compiler_node)
         g.add_node("polish", N.polish_node)
 
@@ -101,9 +98,8 @@ def build_resume_graph(resume_from: str):
         g.add_edge("section_writer", "save_section")
         g.add_conditional_edges(
             "save_section", N.route_next_section,
-            {"section_writer": "section_writer", "timeline_formatter": "timeline_formatter"},
+            {"section_writer": "section_writer", "compiler": "compiler"},
         )
-        g.add_edge("timeline_formatter", "compiler")
         g.add_edge("compiler", "polish")
         g.add_edge("polish", END)
 
@@ -111,7 +107,6 @@ def build_resume_graph(resume_from: str):
         g.add_node("init_writing", N.init_writing_node)
         g.add_node("section_writer", N.section_writer_node)
         g.add_node("save_section", N.save_section_node)
-        g.add_node("timeline_formatter", N.timeline_formatter_node)
         g.add_node("compiler", N.compiler_node)
         g.add_node("polish", N.polish_node)
 
@@ -120,19 +115,16 @@ def build_resume_graph(resume_from: str):
         g.add_edge("section_writer", "save_section")
         g.add_conditional_edges(
             "save_section", N.route_next_section,
-            {"section_writer": "section_writer", "timeline_formatter": "timeline_formatter"},
+            {"section_writer": "section_writer", "compiler": "compiler"},
         )
-        g.add_edge("timeline_formatter", "compiler")
         g.add_edge("compiler", "polish")
         g.add_edge("polish", END)
 
     elif resume_from == "step4":
-        g.add_node("timeline_formatter", N.timeline_formatter_node)
         g.add_node("compiler", N.compiler_node)
         g.add_node("polish", N.polish_node)
 
-        g.add_edge(START, "timeline_formatter")
-        g.add_edge("timeline_formatter", "compiler")
+        g.add_edge(START, "compiler")
         g.add_edge("compiler", "polish")
         g.add_edge("polish", END)
 

@@ -81,7 +81,7 @@ def load_run_state(run_dir: str | Path) -> Dict[str, Any]:
       step1_knowledge_base.json, step1_temporal_index.json
       step2_category_analyses.json, step2_narrative_flow.md
       step3_executive_summary.md (+ step3_sections/*.md)
-      step4_appendix_timeline.md, step4_final.md
+      step4_compiled.md, step4_final.md
     """
     d = Path(run_dir)
     if not d.is_dir():
@@ -120,10 +120,15 @@ def load_run_state(run_dir: str | Path) -> Dict[str, Any]:
         state["narrative_flow"] = nf
         state["is_narrative_approved"] = True
 
-    # Step 2 → Step 3: extract section_plan from narrative_flow JSON
+    # Step 2 → Step 3: extract section_plan + title + implications from narrative_flow JSON
     nf_json = _load_json_safe(d / "step2_narrative_flow.json")
-    if nf_json is not None and "section_plan" in nf_json:
-        state["executive_sections"] = nf_json["section_plan"]
+    if nf_json is not None:
+        if "section_plan" in nf_json:
+            state["executive_sections"] = nf_json["section_plan"]
+        if "document_title" in nf_json:
+            state["document_title"] = nf_json["document_title"]
+        if "key_implications" in nf_json:
+            state["key_implications"] = nf_json["key_implications"]
 
     # Step 3 — sections
     sec_dir = d / "step3_sections"
@@ -143,10 +148,6 @@ def load_run_state(run_dir: str | Path) -> Dict[str, Any]:
         state["executive_summary"] = es
 
     # Step 4
-    at = _load_text_safe(d / "step4_appendix_timeline.md")
-    if at is not None:
-        state["chronological_appendix"] = at
-
     final = _load_text_safe(d / "step4_final.md")
     if final is not None:
         state["final_output"] = final

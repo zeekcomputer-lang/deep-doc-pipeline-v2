@@ -63,7 +63,14 @@ class SectionPlanItem(BaseModel):
 
 
 class NarrativeFlow(BaseModel):
-    """교차 카테고리 스토리라인 + Executive Summary 섹션 기획."""
+    """교차 카테고리 스토리라인 + 백서 제목 + 섹션 기획 + 핵심 시사점."""
+    document_title: str = Field(
+        ...,
+        description=(
+            "백서 표지 제목 (한 줄, 한국어). "
+            "프로젝트의 핵심 주제를 담은 간결하고 전문적인 보고서 제목"
+        ),
+    )
     storyline: str = Field(
         ...,
         description=(
@@ -72,7 +79,14 @@ class NarrativeFlow(BaseModel):
         ),
     )
     section_plan: List[SectionPlanItem] = Field(
-        ..., description="Executive Summary 섹션 목록 (순서대로)",
+        ..., description="본문 섹션 목록 (순서대로, 2~4개 권장)",
+    )
+    key_implications: List[str] = Field(
+        default_factory=list,
+        description=(
+            "문서 마지막 '시사점' 섹션에 들어갈 핵심 시사점 · 제언 목록 "
+            "(각 1-2문장, 한국어, 3~5개). 비즈니스 인사이트와 향후 제언 중심."
+        ),
     )
 
 

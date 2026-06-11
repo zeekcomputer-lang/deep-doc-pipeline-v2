@@ -1,6 +1,7 @@
-# Deep Doc Pipeline — 설계 명세서 v3.0
+# Deep Doc Pipeline — 설계 명세서 v3.1
 
-> **버전:** v3.0 (아키텍처 전면 재설계)
+> **버전:** v3.1 (완성 백서 + DOCX 자동화 + 사전 지식 주입)
+> **v3.1 변경 요약:** 월별 상세 타임라인 부록 제거(`timeline_formatter` 삭제) · 최종문서 = 제목+본문+시사점 · DOCX 자동 생성 · 사전 지식 주입(DOMAIN_KNOWLEDGE/KEY_TERMS)
 > **최종 갱신:** 2026-06-09
 > **목적:** 원시 프로젝트 데이터(JSONL 등) → 카테고리 기반 지식 구조화 → 하이브리드 백서(Executive Summary + 시계열 부록) 자동 생성 LangGraph 파이프라인
 > **GitHub:** https://github.com/zeekcomputer-lang/deep-doc-pipeline-v2
@@ -93,10 +94,11 @@ class GraphState(TypedDict, total=False):
     current_draft: str                                           # 현재 초안
     completed_sections: Annotated[Dict[int, str], update_dict]   # idx → 완성 텍스트
 
-    # ── Step 4: Hybrid Assembly ────────────────────────────────
-    executive_summary: str                                       # 조립된 Executive Summary
-    chronological_appendix: str                                  # 시계열 부록
-    final_compiled: str                                          # 최종 조합 문서
+    # ── Step 4: Whitepaper Assembly ────────────────────────────
+    document_title: str                                          # 백서 표지 제목
+    key_implications: List[str]                                  # 핵심 시사점
+    executive_summary: str                                       # 조립된 본문(제목+섹션)
+    final_compiled: str                                          # 최종 조합 문서(제목+본문+시사점)
     final_output: str                                            # 윤문 완료 최종본
 
 ```
@@ -105,29 +107,29 @@ class GraphState(TypedDict, total=False):
 
 ---
 
-## 5. Pydantic 응답 스키마 (7종)
+## 5. Pydantic 응답 스키마 (6종 활성 + 1종 비활성)
 
 | 스키마 | 용도 (Step) | 핵심 필드 |
 |--------|-------------|----------|
 | `KnowledgeEntry` | 문서 1건 분류·추출 (1) | `category`, `title`, `description`, `source_ref`, `date_hint?`, `impact_level` |
 | `CategoryAnalysis` | 카테고리별 심층 분석 (2) | `category`, `key_findings[]`, `causal_chain`, `implications` |
-| `NarrativeFlow` | 교차 스토리라인 (2) | `storyline` (문제→결정→가치), `section_plan[{title, category_refs[], intent}]` |
+| `NarrativeFlow` | 백서 제목+서사+섹션+시사점 (2) | `document_title`, `storyline`, `section_plan[{title, category_refs[], intent}]`, `key_implications[]` |
 | `NarrativeCritique` | 서사 검증 (2) | `is_approved`, `feedback` |
 | `SectionDraft` | 섹션 본문 집필 (3) | `content` |
-| `TimelineEntry` | 시계열 부록 항목 (4) | `period`, `events[]`, `significance` |
+| `TimelineEntry` | (v3.1 미사용 — 스키마만 잔존) | `period`, `events[]`, `significance` |
 | `PolishedDocument` | 윤문 출력 (4) | `content` |
 
 **공통 규칙:** 모든 스키마는 `src/schemas.py` 정의. LLM 응답 → `extract_json()` → `model_validate()` 3단 파싱. 실패 시 최대 2회 재시도 → `ValidationError`.
 
 ---
 
-## 6. 그래프 구조 — 13 노드 + 2 라우터
+## 6. 그래프 구조 — 12 노드 + 2 라우터
 
 ```
 START → load_docs → [fanout] knowledge_extractor(×N) → knowledge_aggregator → temporal_indexer
   → [fanout] category_analyzer(×4) → narrative_planner ⟲ narrative_critique (최대 3회)
   → init_writing → section_writer → save_section ⟲ route_next_section
-  → timeline_formatter → compiler (Pure Python) → polish → END
+  → compiler (Pure Python) → polish → END   (종료 후 main.py가 DOCX 자동 생성)
 ```
 
 > **v2 대비 제거:** `prepare_translation`, `translate` 노드 완전 제거. 전 Step이 한국어로 직접 출력하므로 번역 단계 불필요.
@@ -179,22 +181,23 @@ START → load_docs → [fanout] knowledge_extractor(×N) → knowledge_aggregat
 ```
 save_section →
   ├─ current_section_index < len(executive_sections) → section_writer (다음 섹션)
-  └─ 모든 섹션 완료 → timeline_formatter (Step 4)
+  └─ 모든 섹션 완료 → compiler (Step 4)
 ```
 
 **prompt_config 연동:** `section_writer` → `get_writing_context()` (PURPOSE + TONE + AUDIENCE + CUSTOM)
 
-### Step 4: Hybrid Assembly (하이브리드 조립)
+### Step 4: Whitepaper Assembly (완성 백서 조립)
 
-Executive Summary와 시계열 부록을 결합하여 최종 백서를 생성한다.
+제목 + 본문(섹션) + 시사점을 Pure Python으로 조립하고 윤문 후 DOCX로 자동 변환한다.
+**(v3.1: 월별 상세 타임라인 부록 제거 — `timeline_formatter` 노드 삭제.)**
 
 | 노드 | 유형 | 설명 |
 |------|------|------|
-| `timeline_formatter` | LLM | `temporal_index`를 입력받아 가독성 높은 시계열 부록(Chronological Appendix)으로 포맷팅. `TimelineEntry` 스키마 기반. `"undated"` 그룹은 별도 "기타 항목" 섹션으로 배치. |
-| `compiler` | Python | `completed_sections` → Executive Summary 조립 + `chronological_appendix` 결합. **LLM 호출 금지.** |
+| `compiler` | Python | `document_title`(H1) + `completed_sections`(본문 H2 섹션) + `key_implications`(시사점 섹션) 조립. **LLM 호출 금지.** 타임라인 부록·감사로그는 최종문서에 미포함. |
 | `polish` | LLM | 최종 문서의 문체·연결어·일관성 윤문. 섹션별 분할 처리(504 방지). **사실 변경·추가 절대 금지.** |
+| (post) `build_whitepaper_docx` | Python | `main.py`가 파이프라인 종료 시 호출. 최종 마크다운 → 세련된 Word 백서(`백서.docx`). `--no-docx`로 비활성화. |
 
-**prompt_config 연동:** `timeline_formatter` → `get_assembly_context()` (PURPOSE + AUDIENCE)
+**제목·시사점 생성:** `narrative_planner`(Step 2)가 NarrativeFlow 스키마의 `document_title` + `key_implications`를 함께 생성. `DOCUMENT_TITLE`이 설정되면 그것을 우선 사용.
 
 ### 고유명사 원어 보존 전략
 
@@ -213,7 +216,9 @@ KR-first 아키텍처에서 기술 용어·제품명·약어는 원어 보존이
 | `get_extraction_context()` | `knowledge_extractor` | ✅ | — | — | — | KO |
 | `get_analysis_context()` | `category_analyzer`, `narrative_planner` | ✅ | ✅ | — | — | KO |
 | `get_writing_context()` | `section_writer` | ✅ | ✅ | ✅ | ✅ | KO |
-| `get_assembly_context()` | `timeline_formatter` | ✅ | — | ✅ | — | KO |
+| `get_domain_knowledge()` | 전 LLM 노드 (자동 주입) | DOMAIN_KNOWLEDGE + KEY_TERMS | KO |
+
+> **사전 지식 주입 (v3.1):** `DOMAIN_KNOWLEDGE`(자유 텍스트) + `KEY_TERMS`(용어집 dict)가 `_build_domain_block()`을 통해 추출·분석·집필 노드 system 프롬프트에 자동 주입된다. `DOCUMENT_TITLE`로 표지 제목 고정 가능.
 
 **v2→v3 변경:** `get_summary_context()` → `get_extraction_context()` + `get_analysis_context()` 분리. `get_planning_context()` → `get_analysis_context()`로 통합. `get_translation_context()` 제거 (KR-first로 번역 단계 자체 불필요). 신규: `get_extraction_context()`, `get_assembly_context()`. 전체 언어 KO 통일.
 
@@ -310,12 +315,11 @@ output/<timestamp>/
   ├── step2_category_analyses.json      # 4개 카테고리 심층 분석
   ├── step2_narrative_flow.md           # 교차 카테고리 스토리라인 + section_plan
   ├── step3_executive_summary.md        # Executive Summary 섹션별 원문
-  ├── step4_appendix_timeline.md        # 시계열 부록 (Chronological Appendix)
   ├── step4_final.md                    # 최종 하이브리드 백서 (한국어, 고유명사 원어 보존)
   └── pipeline_error.log                # 노드 실패 로그 (있을 경우)
 ```
 
-**최종 백서 구조:** `Executive Summary` (2-3p 고압축 비즈니스 서사: 문제→결정→가치) → `Appendix: Chronological Timeline` (시계열 원시 이벤트, Undated 별도 섹션) → `§ Pipeline Audit Log` (카테고리 균형).
+**최종 백서 구조:** `# 제목` (H1 표지) → `## 본문 섹션` (1~2p 고압축 비즈니스 서사: 문제→결정→가치, 2~4 섹션) → `## 시사점 및 제언` (핵심 제언 3~5건). 월별 상세 타임라인 부록 없음. 카테고리 균형 경고는 콘솔/로그로만 보고.
 
 **DOCX 변환:** `python scripts/md_to_docx.py output/<timestamp>/step4_final.md`
 **KB 추출:** `python -m main --export-kb project_kb.json` (외부 시스템 연동용)

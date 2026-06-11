@@ -3,8 +3,8 @@
 > **프로젝트:** deep-doc-pipeline-v2 (v3.0)
 > **GitHub:** https://github.com/zeekcomputer-lang/deep-doc-pipeline-v2 (PUBLIC)
 > **로컬:** `~/.openclaw/workspace/projects/deep-doc-pipeline-v2/`
-> **최종 업데이트:** 2026-06-11 (문서 유효성 재검증)
-> **상태:** ✅ **v3.0 전체 구현 완료** — 13 노드 + 2 라우터 + resume 그래프 모두 코드 반영. AST 14/14 PASS. LLM 실제 실행은 미수행(사용자 엔드포인트 대기).
+> **최종 업데이트:** 2026-06-11 (v3.1 — 완성 백서 + DOCX 자동화 + 사전 지식 주입)
+> **상태:** ✅ **v3.1 구현 완료** — 12 노드 + 2 라우터. 제목+본문+시사점 완성 백서, DOCX 자동 생성. AST 14/14 PASS. LLM 실제 실행은 미수행(사용자 엔드포인트 대기).
 > **원본:** deep-doc-pipeline v2.0에서 포크
 
 ---
@@ -78,11 +78,11 @@ JSONL → 4-카테고리 지식 분류 → 카테고리별 심층 분석 → 경
 2-3페이지 고압축 비즈니스 백서. 집필 루프: `section_writer` → `save_section` → `route_next_section`.
 산출물: `step3_executive_summary.md`
 
-### Step 4 — 하이브리드 조립 (Hybrid Assembly)
+### Step 4 — 완성 백서 조립 (Whitepaper Assembly)
 
-시간순 인덱스 → 부록 포맷팅 → 경영 요약서(본문) + 부록 조립 → 윤문 → END.
-(KR-first이므로 번역 단계 없음. 윤문이 최종 단계.)
-산출물: `step4_appendix_timeline.md` + `step4_compiled.md` + `step4_final.md`
+제목(H1) + 본문 섹션(H2) + 시사점 섹션 → 윤문 → END → **DOCX 자동 생성**.
+(v3.1: 월별 상세 타임라인 부록 제거. compiler가 Pure Python으로 제목+본문+시사점 조립.)
+산출물: `step4_compiled.md` + `step4_final.md` + `백서.docx`
 
 ---
 
@@ -92,7 +92,7 @@ JSONL → 4-카테고리 지식 분류 → 카테고리별 심층 분석 → 경
 START → load_docs → [fanout] knowledge_extractor(×N) → knowledge_aggregator → temporal_indexer
      → [fanout] category_analyzer(×4) → narrative_planner ⟲ narrative_critique
      → init_writing → section_writer → save_section ⟲ route_next_section
-     → timeline_formatter → compiler → polish → END
+     → compiler → polish → END   (종료 후 main.py가 DOCX 자동 생성)
 ```
 
 ### 노드 목록 (13개 + 라우터 2개)
@@ -109,8 +109,7 @@ START → load_docs → [fanout] knowledge_extractor(×N) → knowledge_aggregat
 | 3 | `init_writing` | Python | 집필 상태 초기화 |
 | 3 | `section_writer` | LLM | 서사 기반 섹션 집필 |
 | 3 | `save_section` | Python | 완성 섹션 저장 |
-| 4 | `timeline_formatter` | LLM | 시간순 부록 마크다운 생성 |
-| 4 | `compiler` | Python | 본문+부록 조립 (LLM 금지) |
+| 4 | `compiler` | Python | 제목+본문+시사점 조립 (LLM 금지, 타임라인 부록 없음) |
 | 4 | `polish` | LLM | 최종 윤문 |
 
 
@@ -186,9 +185,23 @@ v2에서 검증된 8개 제약. v3에서도 **동일 적용**.
 
 ---
 
-## §7. 프롬프트 커스텀
+## §7. 프롬프트 커스텀 + 사전 지식 주입
 
-`src/prompt_config.py`만 편집. Step별 적용 매핑:
+`src/prompt_config.py`만 편집. 주요 필드:
+
+| 필드 | 설명 | 적용 범위 |
+|------|------|----------|
+| `DOCUMENT_TITLE` | 표지 제목 고정 (비우면 LLM 자동 생성) | 최종 백서 H1 |
+| `DOCUMENT_PURPOSE` | 문서 목적 | 전 LLM 노드 |
+| `DOMAIN_KNOWLEDGE` | ★ LLM이 모르는 도메인 지식·단계·주의사항 | 전 LLM 노드(추출·분석·집필) |
+| `KEY_TERMS` | 용어집 {용어: 정의} | 전 LLM 노드 |
+| `TONE_DIRECTIVE` | 톤 지시 | 분석·집필 |
+| `TARGET_AUDIENCE` | 대상 독자 | 집필 |
+| `CUSTOM_DIRECTIVES` | 추가 지시 | 집필(section_writer) |
+
+> **사전 지식 주입 목적:** 개발 단계 명칭, 사내 약어, 방법론 등 일반 LLM이 모르거나 오해하기 쉬운 지식을 프롬프트로 주입해 어텐션을 집중시키고 환각을 줄인다.
+
+### 구 Step별 적용 매핑 (참고):
 
 | 설정 | Step 1 (extractor) | Step 2 (analyzer, planner) | Step 3 (writer) | Step 4 (formatter) |
 |------|:---:|:---:|:---:|:---:|:---:|
