@@ -19,6 +19,7 @@
 > | L-022 | 아키텍처 | 최종 산출물은 "완성 양식"으로 설계하라 — 제목+본문+시사점 구조화 + DOCX 자동화로 사용자 추가 수정 제거 |
 > | L-023 | 프롬프트 | 사전 지식 주입(DOMAIN_KNOWLEDGE/KEY_TERMS)으로 LLM 어텐션 집중 + 환각 감소 |
 > | L-024 | 조립 | 제목 중복: 조립기가 붙이는 헤딩과 LLM 본문 내 헤딩이 겹친다 — 프롬프트 예방 + 결정론적 후처리 2계층 |
+> | L-025 | 프롬프트 | 시점 본문 반영: 데이터에 날짜가 있어도 "서술하라" 지시가 없으면 LLM이 안 녹인다 — 조건부 지시 + 환각 방지 |
 
 ## 인덱스
 
@@ -383,6 +384,21 @@ v1.5 translate_node에서 영문 20,000단어 → 한글 6,000단어로 소실 (
 > LLM 출력 구조는 프롬프트로 "요청"하되, 결코 신뢰하지 말고 결정론적 후처리로 "보장"하라. 조립기(Python)와 생성기(LLM)가 둘 다 동일 구조 요소(제목)를 생성할 수 있으면 책임 경계를 명확히 하고(→ 조립기만 제목 담당) 중복 제거 가드를 둔다.
 
 **적용:** `utils.strip_section_title/dedup_adjacent_headings/compile_executive_summary/compile_whitepaper`, `nodes.section_writer`(프롬프트)·`polish`(프롬프트+dedup)
+
+---
+
+## L-025: 시점(날짜) 본문 반영 — 데이터 전달과 지시는 별개
+
+**배경:** v3.1에서 월별 상세 타임라인 '부록'을 제거했다. 그러나 사용자는 "시간이 단서로 주어지면 본문에 시점이 들어가길" 원함. 이건 부록 복원이 아니라 본문 서술에 시점을 녹이는 별개 개념.
+
+**발견:** 데이터는 이미 흐르고 있었다. `format_entries_for_prompt`가 `[2026-02-04] [critical] 제목: 설명` 형태로 날짜를 분석·집필 LLM에 전달 중. **빠진 건 "그 날짜를 서술하라"는 지시뿐이었다.** 모델은 날짜를 볼 수는 있으나 녹일지는 들장날장.
+
+**해결:** `prompt_config.INCLUDE_TEMPORAL_CONTEXT`(기본 True) 추가. True면 `_build_temporal_block()`이 분석·집필 컨텍스트에 시점 서술 규칙 주입. 날짜 단서가 있는 사안만 시점 표기, 없는 사안은 강제하지 않아 환각 방지. `format_entries_for_prompt(show_date=...)`로 데이터 측 노출도 제어 가능.
+
+**원칙:**
+> LLM에게 정보를 "보여주는 것"과 "활용하라고 지시하는 것"은 다르다. 데이터 필드가 프롬프트에 있어도, 원하는 출력 행동은 명시적 지시로 요청해야 일관성이 생긴다. 단, 없는 정보를 지어내지 않도록 가드(환각 방지)를 함께 넣는다.
+
+**적용:** `prompt_config`(INCLUDE_TEMPORAL_CONTEXT/_build_temporal_block/get_temporal_directive, analysis·writing context), `utils.format_entries_for_prompt(show_date)`
 
 ---
 

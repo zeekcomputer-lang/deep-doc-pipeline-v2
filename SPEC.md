@@ -220,6 +220,8 @@ KR-first 아키텍처에서 기술 용어·제품명·약어는 원어 보존이
 
 > **사전 지식 주입 (v3.1):** `DOMAIN_KNOWLEDGE`(자유 텍스트) + `KEY_TERMS`(용어집 dict)가 `_build_domain_block()`을 통해 추출·분석·집필 노드 system 프롬프트에 자동 주입된다. `DOCUMENT_TITLE`로 표지 제목 고정 가능.
 
+> **시점 본문 반영 (Temporal Anchoring, v3.1):** `INCLUDE_TEMPORAL_CONTEXT=True`(기본)이면 `_build_temporal_block()`이 분석·집필 노드에 "날짜 단서가 있는 사안은 본문 서술에 시점을 녹이라"는 지시를 주입한다. 데이터는 `format_entries_for_prompt`가 `[YYYY-MM-DD]`로 이미 전달. 날짜 없는 항목은 시점을 강제하지 않아 환각 방지. 월별 상세 타임라인 '부록'과는 별개(부록은 제거됨, 이건 본문 서술에 시점을 녹임).
+
 **v2→v3 변경:** `get_summary_context()` → `get_extraction_context()` + `get_analysis_context()` 분리. `get_planning_context()` → `get_analysis_context()`로 통합. `get_translation_context()` 제거 (KR-first로 번역 단계 자체 불필요). 신규: `get_extraction_context()`, `get_assembly_context()`. 전체 언어 KO 통일.
 
 ---

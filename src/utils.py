@@ -151,14 +151,18 @@ def build_temporal_index(entries: List[Dict[str, Any]]) -> List[Dict]:
 # Knowledge Base formatting for prompts
 # ──────────────────────────────────────────────────────────────
 
-def format_entries_for_prompt(entries: List[Dict]) -> str:
-    """Format knowledge entries for LLM prompt injection (한국어)."""
+def format_entries_for_prompt(entries: List[Dict], show_date: bool = True) -> str:
+    """Format knowledge entries for LLM prompt injection (한국어).
+
+    show_date=True면 date_hint/period를 각 항목 앞에 [YYYY-MM-DD] 형태로 노출해
+    LLM이 본문에 시점을 녹일 수 있도록 한다.
+    """
     if not entries:
         return "(데이터 없음)"
     lines = []
     for e in entries:
         date = e.get("date_hint") or e.get("period", "")
-        date_str = f"[{date}] " if date and date != "undated" else ""
+        date_str = f"[{date}] " if (show_date and date and date != "undated") else ""
         impact = e.get("impact_level", "")
         lines.append(
             f"- {date_str}[{impact}] {e.get('title', '')}: "
