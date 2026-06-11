@@ -3,11 +3,13 @@
 > **프로젝트:** deep-doc-pipeline-v2 (v3.0)
 > **GitHub:** https://github.com/zeekcomputer-lang/deep-doc-pipeline-v2 (PUBLIC)
 > **로컬:** `~/.openclaw/workspace/projects/deep-doc-pipeline-v2/`
-> **최종 업데이트:** 2026-06-09
-> **상태:** v3.0 아키텍처 설계 완료 / **코드 구현 대기중**
+> **최종 업데이트:** 2026-06-11 (문서 유효성 재검증)
+> **상태:** ✅ **v3.0 전체 구현 완료** — 13 노드 + 2 라우터 + resume 그래프 모두 코드 반영. AST 14/14 PASS. LLM 실제 실행은 미수행(사용자 엔드포인트 대기).
 > **원본:** deep-doc-pipeline v2.0에서 포크
 
 ---
+
+> **⚡ 먼저 `STATUS.md`를 읽으세요** — 현재 상태 스냅샷(구현 완료 범위 / 미수행 작업 / 문서 신뢰도)을 30초 안에 파악.
 
 ## §0. 30초 요약
 
@@ -28,7 +30,7 @@ JSONL → 4-카테고리 지식 분류 → 카테고리별 심층 분석 → 경
 
 | 버전 | 커밋 | 핵심 변경 |
 |------|------|----------|
-| **v3.0** | (구현 대기) | 카테고리 우선 지식 구조화, 4-Step 하이브리드 백서, 날짜 무관, **KR-first 직접 출력** |
+| **v3.0** | `1d5d55e`→`cc7c06e` | 카테고리 우선 지식 구조화, 4-Step 하이브리드 백서, 날짜 무관, **KR-first 직접 출력**, fact-checker 완전 제거 |
 | v2.0 | `09fda16` | 번역 v2 + prompt_config 커스텀 |
 | v1.5 | `50ed4fd` | 경량 워크플로우: 비교/검증 루프 제거 + DOCX 변환 |
 | v1.4 | `a6677ea` | 504 국부 감축 + EN-only + best-of-N |
@@ -78,8 +80,9 @@ JSONL → 4-카테고리 지식 분류 → 카테고리별 심층 분석 → 경
 
 ### Step 4 — 하이브리드 조립 (Hybrid Assembly)
 
-시간순 인덱스 → 부록 포맷팅 → 경영 요약서(본문) + 부록 조립 → 윤문 → (선택) EN→KR 번역.
-산출물: `step4_appendix_timeline.md` + `step4_final.md`
+시간순 인덱스 → 부록 포맷팅 → 경영 요약서(본문) + 부록 조립 → 윤문 → END.
+(KR-first이므로 번역 단계 없음. 윤문이 최종 단계.)
+산출물: `step4_appendix_timeline.md` + `step4_compiled.md` + `step4_final.md`
 
 ---
 
@@ -131,11 +134,12 @@ START → load_docs → [fanout] knowledge_extractor(×N) → knowledge_aggregat
     ├── schemas.py           Pydantic 스키마 (v3 신규)
     ├── state.py             GraphState v3
     ├── context_guard.py     95KB 예산 관리
+    ├── artifacts.py         중간/최종 산출물 저장 + resume 상태 로드 (init_run_dir/save_json/save_text/load_run_state/list_runs)
     ├── llm.py               OpenAI SDK + Rate Limiter + 504
     ├── logger.py            타임라인 로거 + 에러 로그
     ├── utils.py             Pure Python 결정론 로직
     ├── nodes.py             13 노드 + 2 라우터 (v3)
-    └── graph.py             LangGraph 조립 v3
+    └── graph.py             build_graph() + build_resume_graph() v3
 ```
 
 **출력:**
@@ -143,10 +147,12 @@ START → load_docs → [fanout] knowledge_extractor(×N) → knowledge_aggregat
 output/<timestamp>/
   ├── step1_knowledge_base.json       카테고리별 구조화 지식
   ├── step1_temporal_index.json       best-effort 시간순 인덱스
+  ├── step1_raw_entries.json          원시 추출 엔트리 (디버그용)
   ├── step2_category_analyses.json    4개 카테고리 분석 결과
-  ├── step2_narrative_flow.md         교차 서사 흐름
+  ├── step2_narrative_flow.md / .json 교차 서사 흐름
   ├── step3_executive_summary.md      경영 요약서
   ├── step4_appendix_timeline.md      시간순 부록
+  ├── step4_compiled.md               본문+부록 조립본 (윤문 전)
   └── step4_final.md                  최종 하이브리드 백서 (한국어, 고유명사 원어)
 ```
 
@@ -232,13 +238,13 @@ python -m main --list-runs                # 이전 실행 목록
 
 | 시나리오 | 요청 | 행동 |
 |---------|------|------|
-| **A** | "v3 노드 구현해라" | `SPEC.md` 숙독 → `state.py` + `schemas.py` → `nodes.py` Step 순서대로 → `graph.py` |
+| **A** | "v3 노드 구현해라" | **이미 구현 완료.** 변경 요청 시 `SPEC.md` 숙독 → `state.py`/`schemas.py` → `nodes.py` → `graph.py` 순으로 수정 |
 | **B** | "파이프라인 실행" | `.env` 셋업 → `gen_dummy` → `python -m main` |
 | **C** | "프롬프트 커스텀" | `src/prompt_config.py`만 편집 (§7 참조) |
 | **D** | "지식 베이스 내보내기" | `python -m main --export-kb output.json` |
 | **E** | "데이터에 날짜 없음" | 정상 — `temporal_indexer`가 graceful 처리. `step1_temporal_index.json` 확인 |
 | **F** | "카테고리 추가" | `schemas.py` KnowledgeEntry.category enum + `nodes.py` knowledge_extractor 프롬프트 |
-| **G** | "중간부터 재실행" | `python -m main --resume <output_dir> --resume-from <step>` |
+| **G** | "중간부터 재실행" | `python -m main --resume <output_dir> --resume-from <step>` (step 값: `step2`/`step3`/`step4`/`polish`) |
 
 ---
 
